@@ -1,3 +1,36 @@
+#!/usr/bin/env bash
+#
+# audio_convert_functions.sh - convert audio files to mp3, flac, or ogg
+# using ffmpeg. Exposes three commands: 2mp3, 2flac, 2ogg. All three share
+# the same underlying conversion logic, which is why this stays as one file
+# instead of being split like the other functions in this set.
+#
+# This file defines three public commands, so it's meant to be sourced, not
+# run directly.
+#
+# Setup:
+# create file at /usr/local/bin/audio_convert_functions.sh (or
+# ~/.local/bin/audio_convert_functions.sh for a single user)
+# chmod +x /usr/local/bin/audio_convert_functions.sh
+#
+# Add:
+# source /usr/local/bin/audio_convert_functions.sh
+# to your bashrc or zshrc
+#
+# Usage:
+#   2mp3  [-v] <file_or_dir>   Convert to MP3  (default: 320k CBR, -v: LAME V0 VBR)
+#   2flac [-v] <file_or_dir>   Convert to FLAC (lossless; -v is ignored)
+#   2ogg  [-v] <file_or_dir>   Convert to OGG  (default: ~500kbps CBR, -v: highest Vorbis VBR)
+#
+# Given a single file, the output is written next to it. Given a directory,
+# every recognized audio file directly inside it (not recursive) is
+# converted into a "converted" subfolder, skipping files already in the
+# target format so e.g. 2mp3 on a folder of mp3s doesn't re-encode them.
+# Existing output files are never overwritten.
+
+# Convert a single file. Args: format vbr file outdir
+# outdir empty means "write next to the input file".
+# Returns 0 = converted, 2 = skipped (output exists), 1 = error.
 _convert_audio_file() {
     local format="$1" vbr="$2" file="$3" outdir="$4"
     local dir base_name base out
