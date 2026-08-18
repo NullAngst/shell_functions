@@ -5,18 +5,6 @@
 # the same underlying conversion logic, which is why this stays as one file
 # instead of being split like the other functions in this set.
 #
-# This file defines three public commands, so it's meant to be sourced, not
-# run directly.
-#
-# Setup:
-# create file at /usr/local/bin/audio_convert_functions.sh (or
-# ~/.local/bin/audio_convert_functions.sh for a single user)
-# chmod +x /usr/local/bin/audio_convert_functions.sh
-#
-# Add:
-# source /usr/local/bin/audio_convert_functions.sh
-# to your bashrc or zshrc
-#
 # Usage:
 #   2mp3  [-v] <file_or_dir>   Convert to MP3  (default: 320k CBR, -v: LAME V0 VBR)
 #   2flac [-v] <file_or_dir>   Convert to FLAC (lossless; -v is ignored)
