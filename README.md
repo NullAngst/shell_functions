@@ -37,10 +37,9 @@ cleanly into either shell.
 
 ## Installation
 
-Every function file works the same way regardless of shell: copy it
-somewhere, `source` it from your rc file, done. Pick a setup below depending
-on whether you use zsh, bash, or both, and whether you want this for just
-your account or every user on the machine.
+Every script works the exact same way regardless of your shell environment. You copy the files to a storage directory and symlink them into a directory that is actively read by your `$PATH`.
+
+Pick a setup below depending on whether you use Zsh or Bash, along with whether you want this deployed for a single account or every user on the machine.
 
 ### Zsh
 
@@ -52,36 +51,23 @@ cp *.sh ~/.config/zsh/functions/
 chmod +x ~/.config/zsh/functions/*.sh
 ```
 
-Add one `source` line per function to your `~/.zshrc`:
+To run the commands without the `.sh` extension, symlink them into your local bin directory:
 
 ```zsh
-ZSH_FUNCTIONS_DIR="$HOME/.config/zsh/functions"
-source "$ZSH_FUNCTIONS_DIR/cleandir.sh"
-source "$ZSH_FUNCTIONS_DIR/vmv.sh"
-source "$ZSH_FUNCTIONS_DIR/vcp.sh"
-source "$ZSH_FUNCTIONS_DIR/unpack.sh"
-source "$ZSH_FUNCTIONS_DIR/scrmgr.sh"
-source "$ZSH_FUNCTIONS_DIR/moveav.sh"
-source "$ZSH_FUNCTIONS_DIR/shredfile.sh"
-source "$ZSH_FUNCTIONS_DIR/shredfolder.sh"
-source "$ZSH_FUNCTIONS_DIR/ffile.sh"
-source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
-source "$ZSH_FUNCTIONS_DIR/ripcd.sh"
-source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
-source "$ZSH_FUNCTION_DIR/system_update.sh"
+mkdir -p ~/.local/bin
+for f in ~/.config/zsh/functions/*.sh; do
+    name=$(basename "$f" .sh)
+    ln -sf "$f" "$HOME/.local/bin/$name"
+done
 ```
 
-Open a new terminal, or run `source ~/.zshrc`, and the functions are live.
-
-To also invoke them directly as commands, add the directory to `PATH` in
-`~/.zshrc`, above the `source` lines:
+Add the bin directory to your `PATH` in `~/.zshrc`:
 
 ```zsh
-export PATH="$HOME/.config/zsh/functions:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-That lets you run `vmv.sh foo bar` from anywhere, in addition to `vmv foo bar`
-after sourcing.
+Open a new terminal or run `source ~/.zshrc` to apply the changes.
 
 #### Option B: every user on the machine
 
@@ -91,28 +77,7 @@ sudo cp *.sh /usr/local/lib/shell-functions/
 sudo chmod +x /usr/local/lib/shell-functions/*.sh
 ```
 
-Source from that shared location, either per-user in each `~/.zshrc` or
-system-wide in `/etc/zsh/zshrc`:
-
-```zsh
-ZSH_FUNCTIONS_DIR="/usr/local/lib/shell-functions"
-source "$ZSH_FUNCTIONS_DIR/cleandir.sh"
-source "$ZSH_FUNCTIONS_DIR/vmv.sh"
-source "$ZSH_FUNCTIONS_DIR/vcp.sh"
-source "$ZSH_FUNCTIONS_DIR/unpack.sh"
-source "$ZSH_FUNCTIONS_DIR/scrmgr.sh"
-source "$ZSH_FUNCTIONS_DIR/moveav.sh"
-source "$ZSH_FUNCTIONS_DIR/shredfile.sh"
-source "$ZSH_FUNCTIONS_DIR/shredfolder.sh"
-source "$ZSH_FUNCTIONS_DIR/ffile.sh"
-source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
-source "$ZSH_FUNCTIONS_DIR/ripcd.sh"
-source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
-source "$ZSH_FUNCTION_DIR/system_update.sh"
-```
-
-For direct invocation as commands without sourcing, symlink each script (no
-`.sh` extension) into a directory already on everyone's `PATH`:
+Symlink each script (without the `.sh` extension) into a directory that is already on everyone's `PATH`:
 
 ```zsh
 for f in /usr/local/lib/shell-functions/*.sh; do
@@ -131,33 +96,23 @@ cp *.sh ~/.config/bash/functions/
 chmod +x ~/.config/bash/functions/*.sh
 ```
 
-Add one `source` line per function to your `~/.bashrc`:
+To run the commands without the `.sh` extension, symlink them into your local bin directory:
 
 ```bash
-BASH_FUNCTIONS_DIR="$HOME/.config/bash/functions"
-source "$BASH_FUNCTIONS_DIR/cleandir.sh"
-source "$BASH_FUNCTIONS_DIR/vmv.sh"
-source "$BASH_FUNCTIONS_DIR/vcp.sh"
-source "$BASH_FUNCTIONS_DIR/unpack.sh"
-source "$BASH_FUNCTIONS_DIR/scrmgr.sh"
-source "$BASH_FUNCTIONS_DIR/moveav.sh"
-source "$BASH_FUNCTIONS_DIR/shredfile.sh"
-source "$BASH_FUNCTIONS_DIR/shredfolder.sh"
-source "$BASH_FUNCTIONS_DIR/ffile.sh"
-source "$BASH_FUNCTIONS_DIR/audio_convert_functions.sh"
-source "$BASH_FUNCTIONS_DIR/ripcd.sh"
-source "$BASH_FUNCTIONS_DIR/funchelp.sh"
-source "$BASH_FUNCTION_DIR/system_update.sh"
+mkdir -p ~/.local/bin
+for f in ~/.config/bash/functions/*.sh; do
+    name=$(basename "$f" .sh)
+    ln -sf "$f" "$HOME/.local/bin/$name"
+done
 ```
 
-Open a new terminal, or run `source ~/.bashrc`, and the functions are live.
-
-To also invoke them directly as commands, add the directory to `PATH` in
-`~/.bashrc`, above the `source` lines:
+Add the bin directory to your `PATH` in `~/.bashrc`:
 
 ```bash
-export PATH="$HOME/.config/bash/functions:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+Open a new terminal or run `source ~/.bashrc` to apply the changes.
 
 #### Option B: every user on the machine
 
@@ -167,28 +122,7 @@ sudo cp *.sh /usr/local/lib/shell-functions/
 sudo chmod +x /usr/local/lib/shell-functions/*.sh
 ```
 
-Source from that shared location, either per-user in each `~/.bashrc` or
-system-wide in `/etc/bash.bashrc`:
-
-```bash
-BASH_FUNCTIONS_DIR="/usr/local/lib/shell-functions"
-source "$BASH_FUNCTIONS_DIR/cleandir.sh"
-source "$BASH_FUNCTIONS_DIR/vmv.sh"
-source "$BASH_FUNCTIONS_DIR/vcp.sh"
-source "$BASH_FUNCTIONS_DIR/unpack.sh"
-source "$BASH_FUNCTIONS_DIR/scrmgr.sh"
-source "$BASH_FUNCTIONS_DIR/moveav.sh"
-source "$BASH_FUNCTIONS_DIR/shredfile.sh"
-source "$BASH_FUNCTIONS_DIR/shredfolder.sh"
-source "$BASH_FUNCTIONS_DIR/ffile.sh"
-source "$BASH_FUNCTIONS_DIR/audio_convert_functions.sh"
-source "$BASH_FUNCTIONS_DIR/ripcd.sh"
-source "$BASH_FUNCTIONS_DIR/funchelp.sh"
-source "$BASH_FUNCTIONS_DIR/system_update.sh"
-```
-
-For direct invocation as commands without sourcing, symlink each script (no
-`.sh` extension) into a directory already on everyone's `PATH`:
+Symlink each script (without the `.sh` extension) into a directory that is already on everyone's `PATH`:
 
 ```bash
 for f in /usr/local/lib/shell-functions/*.sh; do
