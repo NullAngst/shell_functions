@@ -69,6 +69,7 @@ source "$ZSH_FUNCTIONS_DIR/ffile.sh"
 source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
 source "$ZSH_FUNCTIONS_DIR/ripcd.sh
 source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
+source "$ZSH_FUNCTION_DIR/system_update.sh"
 ```
 
 Open a new terminal, or run `source ~/.zshrc`, and the functions are live.
@@ -108,6 +109,7 @@ source "$ZSH_FUNCTIONS_DIR/ffile.sh"
 source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
 source "$ZSH_FUNCTIONS_DIR/ripcd.sh
 source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
+source "$ZSH_FUNCTION_DIR/system_update.sh"
 ```
 
 For direct invocation as commands without sourcing, symlink each script (no
@@ -146,6 +148,7 @@ source "$BASH_FUNCTIONS_DIR/ffile.sh"
 source "$BASH_FUNCTIONS_DIR/audio_convert_functions.sh"
 source "$BASH_FUNCTIONS_DIR/ripcd.sh"
 source "$BASH_FUNCTIONS_DIR/funchelp.sh"
+source "$BASH_FUNCTION_DIR/system_update.sh"
 ```
 
 Open a new terminal, or run `source ~/.bashrc`, and the functions are live.
@@ -182,6 +185,7 @@ source "$BASH_FUNCTIONS_DIR/ffile.sh"
 source "$BASH_FUNCTIONS_DIR/audio_convert_functions.sh"
 source "$BASH_FUNCTIONS_DIR/ripcd.sh"
 source "$BASH_FUNCTIONS_DIR/funchelp.sh"
+source "$BASH_FUNCTION_DIR/system_update.sh"
 ```
 
 For direct invocation as commands without sourcing, symlink each script (no
@@ -198,20 +202,6 @@ If you run both shells against the same shared `/usr/local/lib/shell-functions`
 directory (Option B in each section), you only need to copy the files once.
 Each rc file still needs its own `source` block, since `.bashrc` and `.zshrc`
 are read independently.
-
-## System updates
-
-`system_update.sh` is a standalone updater, not a function meant to be
-sourced. It detects whichever package managers are present (apt, dnf, yum,
-zypper, pacman plus AUR, apk, xbps, emerge, nix, snap, flatpak) and runs
-updates for each. It requires `set -euo pipefail` semantics and root
-privileges for most package managers, so run it directly rather than
-sourcing it:
-
-```bash
-sudo chmod +x system_update.sh
-sudo ./system_update.sh [-l | --log]
-```
 
 `-l` / `--log` appends output to `/var/log/system-update.log` in addition to
 printing it.
