@@ -84,7 +84,7 @@ from that shared location:
 
 ```bash
 ZSH_FUNCTIONS_DIR="/usr/local/lib/zsh-functions"
-source "$ZSH_FUNCTIONS_DIR/tsearch.sh"
+source "$ZSH_FUNCTIONS_DIR/cleandir.sh"
 # ...same list as above
 ```
 
