@@ -3,15 +3,6 @@
 # vmv - verbose file move using rsync. Removes source files as they
 # transfer and cleans up any empty source directories left behind.
 #
-# Setup:
-# create file at /usr/local/bin/vmv.sh (or ~/.local/bin/vmv.sh for a
-# single user)
-# chmod +x /usr/local/bin/vmv.sh
-#
-# Add:
-# source /usr/local/bin/vmv.sh
-# to your bashrc or zshrc
-#
 # Usage: vmv <source> [source...] <destination>
 
 vmv() {
