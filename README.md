@@ -44,6 +44,7 @@ Pick a setup below depending on whether you use Zsh or Bash, along with whether 
 ## Zsh
 
 ### Option A: just your user
+First, download or create the .sh functions you want to use in a folder, and have your terminal open there.
 
 ```zsh
 mkdir -p ~/.config/zsh/functions
@@ -70,6 +71,7 @@ export PATH="$HOME/.local/bin:$PATH"
 Open a new terminal or run `source ~/.zshrc` to apply the changes.
 
 ### Option B: every user on the machine
+First, download or create the .sh functions you want to use in a folder, and have your terminal open there.
 
 ```zsh
 sudo mkdir -p /usr/local/lib/shell-functions
@@ -89,6 +91,7 @@ done
 ## Bash
 
 ### Option A: just your user
+First, download or create the .sh functions you want to use in a folder, and have your terminal open there.
 
 ```bash
 mkdir -p ~/.config/bash/functions
@@ -115,6 +118,7 @@ export PATH="$HOME/.local/bin:$PATH"
 Open a new terminal or run `source ~/.bashrc` to apply the changes.
 
 ### Option B: every user on the machine
+First, download or create the .sh functions you want to use in a folder, and have your terminal open there.
 
 ```bash
 sudo mkdir -p /usr/local/lib/shell-functions
