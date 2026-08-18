@@ -48,7 +48,8 @@ source "$ZSH_FUNCTIONS_DIR/shredfolder.sh"
 source "$ZSH_FUNCTIONS_DIR/ffile.sh"
 source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
 source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
-source "$SSH_FUNCTION_DIR/ripcd.sh"
+source "$ZSH_FUNCTION_DIR/ripcd.sh"
+source "$ZSH_FUNCTION_DIR/system_update.sh"
 
 
 # ------------------------------------------------------------------------------
