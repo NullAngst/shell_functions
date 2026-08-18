@@ -3,15 +3,6 @@
 # vcp - verbose file copy using rsync, skipping files that already exist
 # at the destination.
 #
-# Setup:
-# create file at /usr/local/bin/vcp.sh (or ~/.local/bin/vcp.sh for a
-# single user)
-# chmod +x /usr/local/bin/vcp.sh
-#
-# Add:
-# source /usr/local/bin/vcp.sh
-# to your bashrc or zshrc
-#
 # Usage: vcp <source> [source...] <destination>
 
 vcp() {
