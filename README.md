@@ -184,7 +184,7 @@ source "$BASH_FUNCTIONS_DIR/ffile.sh"
 source "$BASH_FUNCTIONS_DIR/audio_convert_functions.sh"
 source "$BASH_FUNCTIONS_DIR/ripcd.sh"
 source "$BASH_FUNCTIONS_DIR/funchelp.sh"
-source "$BASH_FUNCTION_DIR/system_update.sh"
+source "$BASH_FUNCTIONS_DIR/system_update.sh"
 ```
 
 For direct invocation as commands without sourcing, symlink each script (no
