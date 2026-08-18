@@ -8,7 +8,7 @@
 #
 #  REQUIREMENTS: cdparanoia, flac, curl, jq, md5sum, eject, metaflac,
 #                and lame/oggenc for MP3/OGG. Optional: mediainfo
-#        AUTHOR: ReverendRetro
+#        AUTHOR: NullAngst
 #       CREATED: 2025-08-10
 #      REVISION: 5.0
 #==============================================================================
