@@ -7,8 +7,6 @@ funchelp() {
 ========================================
 ls      : Colorized, verbose list (ls --color=auto -Flartchs)
 cp      : Robust copy via rsync (--ignore-existing)
-update  : System update
-ripcd   : Run ripcd.sh script
 grep    : Colorized, case-insensitive, line numbers, ignore binary
 
 ========================================
@@ -26,6 +24,8 @@ cleandir   : Removes empty folders in the current dir (Usage: cleandir [-r] for 
 2mp3       : Convert a file or folder of audio to MP3 (Usage: 2mp3 [-v] <file_or_dir>)
 2flac      : Convert a file or folder of audio to FLAC (Usage: 2flac <file_or_dir>)
 2ogg       : Convert a file or folder of audio to OGG (Usage: 2ogg [-v] <file_or_dir>)
+system-update  : Checks for package manager and secondary managers (pacman, flatpak, snap) and runs their full update commands.
+ripcd   : Interactive terminal CD ripper. Fetches metadata, coverart, writes replaygain tags on FLAC.
 funchelp   : Displays this help menu
 
 EOF
