@@ -3,7 +3,7 @@
 # vcp - verbose file copy using rsync, skipping files that already exist
 # at the destination.
 #
-# Usage: vcp <source> [source...] <destination>
+# Usage: vcp <source> <destination>
 
 vcp() {
     if [ "$#" -lt 2 ]; then
