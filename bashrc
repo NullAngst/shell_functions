@@ -30,20 +30,7 @@ alias grep='grep --color=auto -i -n -I'
 #     shredfile shredfolder funchelp)
 # ------------------------------------------------------------------------------
 
-BASH_FUNCTIONS_DIR="$HOME/.config/bash/functions"
-BASH_FUNCTIONS_DIR="/usr/local/lib/shell-functions"
-source "$BASH_FUNCTIONS_DIR/cleandir.sh"
-source "$BASH_FUNCTIONS_DIR/vmv.sh"
-source "$BASH_FUNCTIONS_DIR/vcp.sh"
-source "$BASH_FUNCTIONS_DIR/unpack.sh"
-source "$BASH_FUNCTIONS_DIR/scrmgr.sh"
-source "$BASH_FUNCTIONS_DIR/moveav.sh"
-source "$BASH_FUNCTIONS_DIR/shredfile.sh"
-source "$BASH_FUNCTIONS_DIR/shredfolder.sh"
-source "$BASH_FUNCTIONS_DIR/ffile.sh"
-source "$BASH_FUNCTIONS_DIR/audio_convert_functions.sh"
-source "$BASH_FUNCTIONS_DIR/funchelp.sh"
-source "$SSH_FUNCTION_DIR/ripcd.sh"
+export PATH="$HOME/.local/bin:$PATH"
 
 # ------------------------------------------------------------------------------
 # --- Bash Configuration
