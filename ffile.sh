@@ -5,15 +5,6 @@
 # made it, and when: stat, checksums, attributes, ACLs, hex header/tail,
 # strings, exiftool metadata, binwalk signatures, and entropy.
 #
-# Setup:
-# create file at /usr/local/bin/ffile.sh (or ~/.local/bin/ffile.sh for a
-# single user)
-# chmod +x /usr/local/bin/ffile.sh
-#
-# Add:
-# source /usr/local/bin/ffile.sh
-# to your bashrc or zshrc
-#
 # Usage: ffile <filepath>
 #
 # Optional but recommended tools for full output: exiftool, binwalk, xxd or
