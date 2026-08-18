@@ -51,8 +51,8 @@ scrmgr() {
             echo "  kill <name>    Kill a session from the outside"
             echo "  list           List active sessions"
             echo "  wipe           Remove dead sessions from the list"
-            echo "  exit kill      CTRL + A (then) CTRL + \"
-            echo "  exit nokill    CTRL + D (then) CTRL + A"
+            echo "  exit kill      CTRL + A (then) \\"
+            echo "  exit nokill    CTRL + A (then) d"
             return 1
             ;;
     esac
