@@ -4,15 +4,6 @@
 # an interactive confirmation. Note: shred does not reliably wipe data on
 # SSDs due to wear leveling.
 #
-# Setup:
-# create file at /usr/local/bin/shredfile.sh (or ~/.local/bin/shredfile.sh
-# for a single user)
-# chmod +x /usr/local/bin/shredfile.sh
-#
-# Add:
-# source /usr/local/bin/shredfile.sh
-# to your bashrc or zshrc
-#
 # Usage: shredfile <filepath>
 
 shredfile() {
