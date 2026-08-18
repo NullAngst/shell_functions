@@ -3,14 +3,6 @@
 # moveav - moves and sorts files in a directory into images/, videos/, and
 # audio/ subfolders based on extension.
 #
-# Setup:
-# create file at /usr/local/bin/moveav.sh (or ~/.local/bin/moveav.sh for a
-# single user)
-# chmod +x /usr/local/bin/moveav.sh
-#
-# Add:
-# source /usr/local/bin/moveav.sh
-# to your bashrc or zshrc
 #
 # Usage: moveav [-R] [target_dir]
 #   -R : recurse into subdirectories, sorting each one independently
