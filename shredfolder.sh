@@ -4,15 +4,6 @@
 # the directory, after an interactive confirmation. Note: shred does not
 # reliably wipe data on SSDs due to wear leveling.
 #
-# Setup:
-# create file at /usr/local/bin/shredfolder.sh (or ~/.local/bin/shredfolder.sh
-# for a single user)
-# chmod +x /usr/local/bin/shredfolder.sh
-#
-# Add:
-# source /usr/local/bin/shredfolder.sh
-# to your bashrc or zshrc
-#
 # Usage: shredfolder <folderpath>
 
 shredfolder() {
