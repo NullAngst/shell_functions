@@ -4,14 +4,6 @@
 # zip, rar, 7z), including multi-volume/split archives, then remove the
 # source file(s) on a successful extraction.
 #
-# Setup:
-# create file at /usr/local/bin/unpack.sh
-# sudo chmod +x /usr/local/bin/unpack.sh
-#
-# Add:
-# source /usr/local/bin/unpack.sh
-# to bashrc or zshrc
-#
 # Usage: unpack <archive_file_or_directory> [additional_files...]
 
 unpack() {
