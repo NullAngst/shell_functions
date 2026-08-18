@@ -41,9 +41,9 @@ Every script works the exact same way regardless of your shell environment. You 
 
 Pick a setup below depending on whether you use Zsh or Bash, along with whether you want this deployed for a single account or every user on the machine.
 
-### Zsh
+## Zsh
 
-#### Option A: just your user
+### Option A: just your user
 
 ```zsh
 mkdir -p ~/.config/zsh/functions
@@ -69,7 +69,7 @@ export PATH="$PATH:$HOME/.config/zsh/functions:/usr/local/lib/shell-functions"
 
 Open a new terminal or run `source ~/.zshrc` to apply the changes.
 
-#### Option B: every user on the machine
+### Option B: every user on the machine
 
 ```zsh
 sudo mkdir -p /usr/local/lib/shell-functions
@@ -86,9 +86,9 @@ for f in /usr/local/lib/shell-functions/*.sh; do
 done
 ```
 
-### Bash
+## Bash
 
-#### Option A: just your user
+### Option A: just your user
 
 ```bash
 mkdir -p ~/.config/bash/functions
@@ -114,7 +114,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Open a new terminal or run `source ~/.bashrc` to apply the changes.
 
-#### Option B: every user on the machine
+### Option B: every user on the machine
 
 ```bash
 sudo mkdir -p /usr/local/lib/shell-functions
