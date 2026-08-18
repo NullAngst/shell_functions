@@ -35,7 +35,7 @@ alias grep='grep --color=auto -i -n -I'
 # system-wide) and what each function does.
 # ------------------------------------------------------------------------------
 
-export PATH="$PATH:$HOME/.config/zsh/functions:/usr/local/lib/shell-functions"
+export PATH="$HOME/.local/bin:$PATH"
 
 # ------------------------------------------------------------------------------
 # --- Zsh Configuration
