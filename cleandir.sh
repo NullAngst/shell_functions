@@ -1,19 +1,4 @@
 #!/usr/bin/env bash
-#
-# cleandir - removes empty directories in the current directory, or
-# recursively through all subdirectories.
-#
-# Setup:
-# create file at /usr/local/bin/cleandir.sh (or ~/.local/bin/cleandir.sh for a
-# single user)
-# chmod +x /usr/local/bin/cleandir.sh
-#
-# Add:
-# source /usr/local/bin/cleandir.sh
-# to your bashrc or zshrc
-#
-# Usage: cleandir [-r]
-
 cleandir() {
     local recursive=0
 
