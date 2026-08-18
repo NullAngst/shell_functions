@@ -1,5 +1,23 @@
 # shell_functions
 
+A set of standalone shell functions for common tasks: file transfer, archive
+extraction, forensic file analysis, media sorting, screen session
+management, secure deletion, audio conversion, and system updates.
+
+Every function file is written to work two ways:
+
+- **Sourced**: defines the function in your current shell, so you can call
+  it by name (`vmv foo bar`).
+- **Executed directly**: run the file itself instead of sourcing it, and it
+  calls the function once with whatever arguments you passed
+  (`./vmv.sh foo bar`).
+
+Each file detects at runtime whether it's running under `bash` or `zsh` and
+adjusts its sourced-vs-executed check accordingly, so the same file sources
+cleanly into either shell.
+
+## Functions
+
 | File | Function | What it does |
 |---|---|---|
 | `cleandir.sh` | `cleandir` | Removes empty directories in the current directory. `-r` recurses into all subdirectories. |
@@ -12,36 +30,31 @@
 | `shredfolder.sh` | `shredfolder` | Runs `shred -vzu` against every file in a directory, then removes the directory, after an interactive confirmation. Does not reliably wipe data on SSDs. |
 | `ffile.sh` | `ffile` | Forensic file analysis: stat, checksums (md5/sha1/sha256/sha512/b2), lsattr, getfattr, getfacl, lsof, package ownership, hex header/tail, printable strings, exiftool metadata, binwalk signatures, and a byte-entropy estimate. |
 | `audio_convert_functions.sh` | `2mp3`, `2flac`, `2ogg` | Converts audio to MP3, FLAC, or OGG via `ffmpeg`. Given a file, converts in place next to it. Given a directory, batch-converts every recognized audio file directly inside it (not recursive) into a `converted/` subfolder, skipping files already in the target format and never overwriting existing output. `-v` switches MP3/OGG to their highest-quality VBR mode instead of the fixed-bitrate default (ignored for FLAC, which is always lossless). |
-| `funchelp.sh` | `funchelp` | Prints a summary of the aliases and functions in this set. Renamed from `cfhelp`. |
+| `funchelp.sh` | `funchelp` | Prints a summary of the aliases and functions in this set. |
 
-`vmv`, `vcp`, `unpack`, `scrmgr`, `moveav`, `shredfile`, `shredfolder`, `ffile`,
-`cleandir`, `audio_convert_functions`, and `funchelp` are plain bash and work
+`system_update.sh` is documented separately under [System updates](#system-updates)
+below. It's a standalone script, not a sourced function.
 
 ## Installation
 
-Every file is written so it works two ways:
+Every function file works the same way regardless of shell: copy it
+somewhere, `source` it from your rc file, done. Pick a setup below depending
+on whether you use zsh, bash, or both, and whether you want this for just
+your account or every user on the machine.
 
-- **Sourced**: defines the function in your current shell, so you can call
-  it by name (`vmv foo bar`).
-- **Executed directly**: if you run the file itself instead of sourcing it,
-  it calls the function once with whatever arguments you passed
-  (`./vmv.sh foo bar`), same as running any other script.
+### Zsh
 
-Pick one of the two setups below depending on whether you want these
-available for just your account or for every user on the machine.
+#### Option A: just your user
 
-### Option A: just your user
-
-```bash
+```zsh
 mkdir -p ~/.config/zsh/functions
 cp *.sh ~/.config/zsh/functions/
 chmod +x ~/.config/zsh/functions/*.sh
 ```
 
-Then add one `source` line per function to your `~/.zshrc` (the provided
-`zshrc` in this set already has these):
+Add one `source` line per function to your `~/.zshrc`:
 
-```bash
+```zsh
 ZSH_FUNCTIONS_DIR="$HOME/.config/zsh/functions"
 source "$ZSH_FUNCTIONS_DIR/cleandir.sh"
 source "$ZSH_FUNCTIONS_DIR/vmv.sh"
@@ -58,55 +71,151 @@ source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
 
 Open a new terminal, or run `source ~/.zshrc`, and the functions are live.
 
-If you'd also like to be able to invoke them directly as commands (not just
-as sourced shell functions), add the directory to your `PATH` in `~/.zshrc`,
-above the `source` lines:
+To also invoke them directly as commands, add the directory to `PATH` in
+`~/.zshrc`, above the `source` lines:
 
-```bash
+```zsh
 export PATH="$HOME/.config/zsh/functions:$PATH"
 ```
 
 That lets you run `vmv.sh foo bar` from anywhere, in addition to `vmv foo bar`
 after sourcing.
 
-### Option B: every user on the machine
+#### Option B: every user on the machine
 
-Install to a directory already on the system `PATH`, owned by root:
-
-```bash
-sudo mkdir -p /usr/local/lib/zsh-functions
-sudo cp *.sh /usr/local/lib/zsh-functions/
-sudo chmod +x /usr/local/lib/zsh-functions/*.sh
+```zsh
+sudo mkdir -p /usr/local/lib/shell-functions
+sudo cp *.sh /usr/local/lib/shell-functions/
+sudo chmod +x /usr/local/lib/shell-functions/*.sh
 ```
 
-Then have each user (or a system-wide config like `/etc/zsh/zshrc`) source
-from that shared location:
+Source from that shared location, either per-user in each `~/.zshrc` or
+system-wide in `/etc/zsh/zshrc`:
 
-```bash
-ZSH_FUNCTIONS_DIR="/usr/local/lib/zsh-functions"
+```zsh
+ZSH_FUNCTIONS_DIR="/usr/local/lib/shell-functions"
 source "$ZSH_FUNCTIONS_DIR/cleandir.sh"
-# ...same list as above
+source "$ZSH_FUNCTIONS_DIR/vmv.sh"
+source "$ZSH_FUNCTIONS_DIR/vcp.sh"
+source "$ZSH_FUNCTIONS_DIR/unpack.sh"
+source "$ZSH_FUNCTIONS_DIR/scrmgr.sh"
+source "$ZSH_FUNCTIONS_DIR/moveav.sh"
+source "$ZSH_FUNCTIONS_DIR/shredfile.sh"
+source "$ZSH_FUNCTIONS_DIR/shredfolder.sh"
+source "$ZSH_FUNCTIONS_DIR/ffile.sh"
+source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
+source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
 ```
 
 For direct invocation as commands without sourcing, symlink each script (no
-`.sh` extension) into a directory that's already on everyone's `PATH`, such
-as `/usr/local/bin`:
+`.sh` extension) into a directory already on everyone's `PATH`:
 
-```bash
-for f in /usr/local/lib/zsh-functions/*.sh; do
+```zsh
+for f in /usr/local/lib/shell-functions/*.sh; do
     name=$(basename "$f" .sh)
     sudo ln -sf "$f" "/usr/local/bin/$name"
 done
 ```
 
-That gives every user on the machine `vmv`, `unpack`, `ffile`, etc. as
-regular commands, whether or not they've sourced anything into their shell.
+### Bash
+
+#### Option A: just your user
+
+```bash
+mkdir -p ~/.config/bash/functions
+cp *.sh ~/.config/bash/functions/
+chmod +x ~/.config/bash/functions/*.sh
+```
+
+Add one `source` line per function to your `~/.bashrc`:
+
+```bash
+BASH_FUNCTIONS_DIR="$HOME/.config/bash/functions"
+source "$BASH_FUNCTIONS_DIR/cleandir.sh"
+source "$BASH_FUNCTIONS_DIR/vmv.sh"
+source "$BASH_FUNCTIONS_DIR/vcp.sh"
+source "$BASH_FUNCTIONS_DIR/unpack.sh"
+source "$BASH_FUNCTIONS_DIR/scrmgr.sh"
+source "$BASH_FUNCTIONS_DIR/moveav.sh"
+source "$BASH_FUNCTIONS_DIR/shredfile.sh"
+source "$BASH_FUNCTIONS_DIR/shredfolder.sh"
+source "$BASH_FUNCTIONS_DIR/ffile.sh"
+source "$BASH_FUNCTIONS_DIR/audio_convert_functions.sh"
+source "$BASH_FUNCTIONS_DIR/funchelp.sh"
+```
+
+Open a new terminal, or run `source ~/.bashrc`, and the functions are live.
+
+To also invoke them directly as commands, add the directory to `PATH` in
+`~/.bashrc`, above the `source` lines:
+
+```bash
+export PATH="$HOME/.config/bash/functions:$PATH"
+```
+
+#### Option B: every user on the machine
+
+```bash
+sudo mkdir -p /usr/local/lib/shell-functions
+sudo cp *.sh /usr/local/lib/shell-functions/
+sudo chmod +x /usr/local/lib/shell-functions/*.sh
+```
+
+Source from that shared location, either per-user in each `~/.bashrc` or
+system-wide in `/etc/bash.bashrc`:
+
+```bash
+BASH_FUNCTIONS_DIR="/usr/local/lib/shell-functions"
+source "$BASH_FUNCTIONS_DIR/cleandir.sh"
+source "$BASH_FUNCTIONS_DIR/vmv.sh"
+source "$BASH_FUNCTIONS_DIR/vcp.sh"
+source "$BASH_FUNCTIONS_DIR/unpack.sh"
+source "$BASH_FUNCTIONS_DIR/scrmgr.sh"
+source "$BASH_FUNCTIONS_DIR/moveav.sh"
+source "$BASH_FUNCTIONS_DIR/shredfile.sh"
+source "$BASH_FUNCTIONS_DIR/shredfolder.sh"
+source "$BASH_FUNCTIONS_DIR/ffile.sh"
+source "$BASH_FUNCTIONS_DIR/audio_convert_functions.sh"
+source "$BASH_FUNCTIONS_DIR/funchelp.sh"
+```
+
+For direct invocation as commands without sourcing, symlink each script (no
+`.sh` extension) into a directory already on everyone's `PATH`:
+
+```bash
+for f in /usr/local/lib/shell-functions/*.sh; do
+    name=$(basename "$f" .sh)
+    sudo ln -sf "$f" "/usr/local/bin/$name"
+done
+```
+
+If you run both shells against the same shared `/usr/local/lib/shell-functions`
+directory (Option B in each section), you only need to copy the files once.
+Each rc file still needs its own `source` block, since `.bashrc` and `.zshrc`
+are read independently.
+
+## System updates
+
+`system_update.sh` is a standalone updater, not a function meant to be
+sourced. It detects whichever package managers are present (apt, dnf, yum,
+zypper, pacman plus AUR, apk, xbps, emerge, nix, snap, flatpak) and runs
+updates for each. It requires `set -euo pipefail` semantics and root
+privileges for most package managers, so run it directly rather than
+sourcing it:
+
+```bash
+sudo chmod +x system_update.sh
+sudo ./system_update.sh [-l | --log]
+```
+
+`-l` / `--log` appends output to `/var/log/system-update.log` in addition to
+printing it.
 
 ## Notes
 
 - `shredfile` and `shredfolder` both warn, and require interactive
-  confirmation, that `shred` does not reliably erase data on SSDs (wear
+  confirmation, that `shred` does not reliably erase data on SSDs. Wear
   leveling means the physical cells written to aren't guaranteed to be the
-  ones overwritten).
+  ones overwritten.
 - `scrmgr` intentionally isn't named `screen`, so it won't shadow the real
   `screen` binary.
