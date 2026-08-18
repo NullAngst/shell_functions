@@ -4,15 +4,6 @@
 # Combines what used to be five separate aliases/functions:
 #   sss (start), srs (reattach), sks (kill), sls (list), swp (wipe)
 #
-# Setup:
-# create file at /usr/local/bin/scrmgr.sh (or ~/.local/bin/scrmgr.sh for a
-# single user)
-# chmod +x /usr/local/bin/scrmgr.sh
-#
-# Add:
-# source /usr/local/bin/scrmgr.sh
-# to your bashrc or zshrc
-#
 # Usage:
 #   scrmgr start <name>    Start a new named session      (was: sss)
 #   scrmgr resume <name>   Reattach to an existing session (was: srs)
