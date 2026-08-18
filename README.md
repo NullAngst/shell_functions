@@ -64,7 +64,7 @@ done
 Add the bin directory to your `PATH` in `~/.zshrc`:
 
 ```zsh
-export PATH="$PATH:$HOME/.config/zsh/functions:/usr/local/lib/shell-functions"
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Open a new terminal or run `source ~/.zshrc` to apply the changes.
