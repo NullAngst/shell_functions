@@ -31,10 +31,9 @@ cleanly into either shell.
 | `ffile.sh` | `ffile` | Forensic file analysis: stat, checksums (md5/sha1/sha256/sha512/b2), lsattr, getfattr, getfacl, lsof, package ownership, hex header/tail, printable strings, exiftool metadata, binwalk signatures, and a byte-entropy estimate. |
 | `audio_convert_functions.sh` | `2mp3`, `2flac`, `2ogg` | Converts audio to MP3, FLAC, or OGG via `ffmpeg`. Given a file, converts in place next to it. Given a directory, batch-converts every recognized audio file directly inside it (not recursive) into a `converted/` subfolder, skipping files already in the target format and never overwriting existing output. `-v` switches MP3/OGG to their highest-quality VBR mode instead of the fixed-bitrate default (ignored for FLAC, which is always lossless). |
 | `ripcd.sh` | `ripcd` | Interactive terminal CD ripper. Fetches metadata, coverart, writes replaygain tags on FLAC. |
+| `system_update.sh` | `system-update` | Checks for package manager and secondary managers (pacman, flatpak, snap) and runs their full update commands. |
 | `funchelp.sh` | `funchelp` | Prints a summary of the aliases and functions in this set. |
 
-`system_update.sh` is documented separately under [System updates](#system-updates)
-below. It's a standalone script, not a sourced function.
 
 ## Installation
 
@@ -67,7 +66,7 @@ source "$ZSH_FUNCTIONS_DIR/shredfile.sh"
 source "$ZSH_FUNCTIONS_DIR/shredfolder.sh"
 source "$ZSH_FUNCTIONS_DIR/ffile.sh"
 source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
-source "$ZSH_FUNCTIONS_DIR/ripcd.sh
+source "$ZSH_FUNCTIONS_DIR/ripcd.sh"
 source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
 source "$ZSH_FUNCTION_DIR/system_update.sh"
 ```
@@ -107,7 +106,7 @@ source "$ZSH_FUNCTIONS_DIR/shredfile.sh"
 source "$ZSH_FUNCTIONS_DIR/shredfolder.sh"
 source "$ZSH_FUNCTIONS_DIR/ffile.sh"
 source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
-source "$ZSH_FUNCTIONS_DIR/ripcd.sh
+source "$ZSH_FUNCTIONS_DIR/ripcd.sh"
 source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
 source "$ZSH_FUNCTION_DIR/system_update.sh"
 ```
