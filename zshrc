@@ -35,22 +35,7 @@ alias grep='grep --color=auto -i -n -I'
 # system-wide) and what each function does.
 # ------------------------------------------------------------------------------
 
-ZSH_FUNCTIONS_DIR="$HOME/.config/zsh/functions"
-ZSH_FUNCTIONS_DIR="/usr/local/lib/shell-functions"
-source "$ZSH_FUNCTIONS_DIR/cleandir.sh"
-source "$ZSH_FUNCTIONS_DIR/vmv.sh"
-source "$ZSH_FUNCTIONS_DIR/vcp.sh"
-source "$ZSH_FUNCTIONS_DIR/unpack.sh"
-source "$ZSH_FUNCTIONS_DIR/scrmgr.sh"
-source "$ZSH_FUNCTIONS_DIR/moveav.sh"
-source "$ZSH_FUNCTIONS_DIR/shredfile.sh"
-source "$ZSH_FUNCTIONS_DIR/shredfolder.sh"
-source "$ZSH_FUNCTIONS_DIR/ffile.sh"
-source "$ZSH_FUNCTIONS_DIR/audio_convert_functions.sh"
-source "$ZSH_FUNCTIONS_DIR/funchelp.sh"
-source "$ZSH_FUNCTIONS_DIR/ripcd.sh"
-source "$ZSH_FUNCTIONS_DIR/system_update.sh"
-
+export PATH="$PATH:$HOME/.config/zsh/functions:/usr/local/lib/shell-functions"
 
 # ------------------------------------------------------------------------------
 # --- Zsh Configuration
