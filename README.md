@@ -4,7 +4,7 @@ A set of standalone shell functions for common tasks: file transfer, archive
 extraction, forensic file analysis, media sorting, screen session
 management, secure deletion, audio conversion, and system updates.
 
-Every function file is written to work two ways:
+Most function files are written to work two ways:
 
 - **Sourced**: defines the function in your current shell, so you can call
   it by name (`vmv foo bar`).
@@ -12,9 +12,15 @@ Every function file is written to work two ways:
   calls the function once with whatever arguments you passed
   (`./vmv.sh foo bar`).
 
-Each file detects at runtime whether it's running under `bash` or `zsh` and
-adjusts its sourced-vs-executed check accordingly, so the same file sources
-cleanly into either shell.
+Each of these files detects at runtime whether it's running under `bash` or
+`zsh` and adjusts its sourced-vs-executed check accordingly, so the same
+file sources cleanly into either shell.
+
+A handful of files (`file_encrypt.sh`, `folder_encrypt.sh`, `pw-manager.sh`,
+`ufw_tui.sh`, `funcupdate.sh`) are standalone scripts instead of sourceable
+functions; see [Standalone Scripts](#standalone-scripts) below. They still
+install and symlink the same way as everything else, they just don't do
+anything useful if you `source` them; run them directly.
 
 ## Functions
 
@@ -34,6 +40,20 @@ cleanly into either shell.
 | `system_update.sh` | `system_update` | Checks for package manager and secondary managers (pacman, flatpak, snap) and runs their full update commands. |
 | `funchelp.sh` | `funchelp` | Prints a summary of the aliases and functions in this set. |
 
+
+## Standalone Scripts
+
+These are not sourceable functions. They always run as their own process,
+whether you invoke them as `./file_encrypt.sh` or as `file_encrypt` once
+symlinked per the Installation steps below.
+
+| File | Command | What it does |
+|---|---|---|
+| `file_encrypt.sh` | `file_encrypt` | Encrypts a file with GPG symmetric AES-256 (`file_encrypt FILE`), or decrypts with `-D` (`file_encrypt -D FILE.gpg`). Prompts before deleting the source file/archive after a successful run. |
+| `folder_encrypt.sh` | `folder_encrypt` | Tars and GPG-encrypts a folder (`folder_encrypt FOLDER`), or reverses that with `-D`. `-R` switches to bulk mode: every subdirectory of the target is archived/encrypted (or every `.gpg` inside it decrypted) individually, and on encrypt, loose files directly inside the target are moved into a `loose_files/` subfolder first so they aren't left behind. Prompts before deleting sources after each successful operation. |
+| `pw-manager.sh` | `pw-manager` | Terminal password manager. Vaults are GPG-encrypted tar archives (`.gpg` for single-password, `.gpg2` for a two-layer/two-password scheme), decrypted to a `/dev/shm` tmpfs while in use. Menu-driven: create/open vaults, browse/search/add/edit entries in a TUI, import/export CSV compatible with Bitwarden and KeePassXC, set a default vault directory and backup retention. Per-vault file locking prevents opening the same vault twice at once, and each write keeps rolling backups (pruned after the configured retention period). |
+| `ufw_tui.sh` | `ufw_tui` | Menu-driven front end for `ufw`. List/add/remove rules, allow or deny by port (with optional protocol, e.g. `80/tcp`) or by source IP, set default incoming/outgoing policy, enable/disable/reload UFW, or reset it to factory defaults. Must be run as root. |
+| `funcupdate.sh` | `funcupdate` | Re-clones this repo to a temp directory and redeploys every `.sh` file to `/usr/local/lib/shell-functions`, symlinking each into `/usr/local/bin` (System-wide Option B layout only). Must be run as root; use it to pull updates after the initial install. |
 
 ## Installation
 
@@ -140,8 +160,9 @@ directory (Option B in each section), you only need to copy the files once.
 Each rc file still needs its own `source` block, since `.bashrc` and `.zshrc`
 are read independently.
 
-`-l` / `--log` appends output to `/var/log/system-update.log` in addition to
-printing it.
+`system_update -l` / `--log` appends its output to `/var/log/system-update.log`
+in addition to printing it. `funcupdate -l` / `--log` appends to the same log
+file, prefixed with its own start timestamp, before it does anything else.
 
 ## Notes
 
@@ -151,3 +172,7 @@ printing it.
   ones overwritten.
 - `scrmgr` intentionally isn't named `screen`, so it won't shadow the real
   `screen` binary.
+- `ufw_tui` and `funcupdate` both require root (run with `sudo`); `pw-manager`
+- `file_encrypt`/`folder_encrypt` and `pw-manager`'s vault encryption all use
+  GPG symmetric AES-256, but they're independent tools with separate on-disk
+  formats; a vault made by one isn't compatible with the other.
