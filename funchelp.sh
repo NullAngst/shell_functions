@@ -28,6 +28,15 @@ system-update  : Checks for package manager and secondary managers (pacman, flat
 ripcd   : Interactive terminal CD ripper. Fetches metadata, coverart, writes replaygain tags on FLAC.
 funchelp   : Displays this help menu
 
+========================================
+           STANDALONE SCRIPTS
+========================================
+file_encrypt   : Encrypt/decrypt a file with GPG symmetric AES-256 (Usage: file_encrypt [-D] <file>)
+folder_encrypt : Tar + GPG-encrypt a folder, or reverse with -D; -R for bulk mode (Usage: folder_encrypt [-D] [-R] <target>)
+pw-manager     : Menu-driven terminal password manager (GPG-encrypted vaults, CSV import/export)
+ufw_tui        : Menu-driven front end for ufw (rules, policy, enable/disable/reset); requires root
+funcupdate     : Re-pulls this repo and redeploys all scripts system-wide; requires root
+
 EOF
 }
 
