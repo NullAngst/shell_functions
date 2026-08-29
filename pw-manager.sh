@@ -15,6 +15,7 @@ CONFIG_FILE="$HOME/.pw-manager-config"
 VAULTS_FILE="$HOME/.pw-manager-vaults"
 DEFAULT_VAULT_PATH=""
 BACKUP_RETENTION_DAYS=7
+RAM_ONLY_STRICT="0"
 SECURE_TMP=""
 CSV_TMP=""
 LOCK_DIR=""
@@ -73,16 +74,6 @@ wipe_csv_tmp() {
     fi
     CSV_TMP=""
 }
-
-# Best-effort removal of the master passwords from this shell's own
-# variables once a vault session is done with them. This is NOT a real
-# guarantee: bash strings are immutable, so this drops our reference to
-# the value but does not zero the underlying memory, and a copy can sit
-# in freed heap until something else reuses that memory. It stops the
-# password from showing up in `declare -p`, and shortens the window,
-# but it will not stop an adversary who can read this process's memory
-# directly (ptrace, a core dump, or a swapped-out page - see the swap
-# note on init_secure_env below).
 scrub_master_pwds() {
     MASTER_PWD_1=""
     MASTER_PWD_2=""
@@ -104,15 +95,6 @@ cleanup() {
     exit 0
 }
 trap cleanup EXIT INT TERM
-
-# Strips bytes a terminal would interpret as control/escape sequences
-# (ESC and other C0 controls) before entry data is printed. Vault entries
-# can come from typed input, a hand-edit via $EDITOR, or an imported CSV
-# from another password manager - any of those can carry ANSI/OSC escape
-# sequences that a terminal would act on when echoed (redraw the screen,
-# move the cursor, fake a prompt). Tab and newline are kept so multi-line
-# notes still display normally; this only ever touches what gets printed,
-# never the value used for clipboard copy or written back to the vault.
 sanitize_display() {
     printf '%s' "$1" | tr -d '\000-\010\013-\037\177'
 }
@@ -126,22 +108,22 @@ check_dependencies() {
         fi
     done
 }
-
-# Plain, unquoted, newline-delimited config (line 1 = default path, line 2 =
-# retention days). Deliberately NOT sourced as shell code: a config file is
-# writable data, and sourcing it would let anything that can write to
-# ~/.pw-manager-config run arbitrary commands as you the next time you
-# start the script.
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then return; fi
-    local line1 line2
+    local line1 line2 line3
     IFS= read -r line1 < "$CONFIG_FILE"
     line2=$(sed -n '2p' "$CONFIG_FILE" 2>/dev/null)
+    line3=$(sed -n '3p' "$CONFIG_FILE" 2>/dev/null)
     if [[ -n "$line1" ]]; then
         DEFAULT_VAULT_PATH="$line1"
     fi
     if [[ "$line2" =~ ^[0-9]+$ ]]; then
         BACKUP_RETENTION_DAYS="$line2"
+    fi
+    if [[ "$line3" == "1" ]]; then
+        RAM_ONLY_STRICT="1"
+    else
+        RAM_ONLY_STRICT="0"
     fi
 }
 
@@ -149,13 +131,10 @@ save_config() {
     {
         printf '%s\n' "$DEFAULT_VAULT_PATH"
         printf '%s\n' "$BACKUP_RETENTION_DAYS"
+        printf '%s\n' "$RAM_ONLY_STRICT"
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE"
 }
-
-# Plain, unquoted, tab-delimited "name<TAB>path" lines, one known vault per
-# line. Same reasoning as CONFIG_FILE: never sourced as shell code, since
-# it's just data and a name/path could contain anything.
 load_known_vaults() {
     KNOWN_VAULT_NAMES=()
     KNOWN_VAULT_PATHS=()
@@ -199,60 +178,68 @@ backup_vault() {
 
     find "$b_dir" -name "${v_name}.*.bak" -type f -mtime "+${BACKUP_RETENTION_DAYS}" -exec rm -f {} \; 2>/dev/null
 }
-
-# Creates a fresh ramdisk-backed working directory and points TMPDIR at it.
-# TMPDIR matters because bash implements heredocs/herestrings (the
-# `3<<<"$MASTER_PWD_1"` passphrase feeds below) by briefly writing the
-# content to a temp file under TMPDIR before unlinking it. If TMPDIR is a
-# regular disk-backed /tmp, your master password briefly touches a real
-# disk block. Pointing TMPDIR at /dev/shm avoids that specific disk write.
-#
-# Two things this does NOT solve, and can't from inside bash, so they're
-# called out here instead of implied by the code:
-#   - tmpfs is still ordinary RAM the kernel is free to swap out under
-#     memory pressure. If swap is enabled and not encrypted, decrypted
-#     vault contents - and the master password sitting in this script's
-#     own variables - can still end up on a real disk that way. Disable
-#     swap or use encrypted swap if that's part of your threat model;
-#     this script has no way to prevent it from bash.
-#   - if /dev/shm isn't present, it will warn and use a disk-based tmpdir, because
-#     "shred" on that fallback path is not reliable on SSDs or
-#     copy-on-write filesystems (btrfs, ZFS): the drive or filesystem
-#     can leave the old physical blocks intact even after the logical
-#     file content has been overwritten.
+is_shm_tmpfs() {
+    [[ -d /dev/shm ]] || return 1
+    local fstype
+    fstype=$(stat -f -c '%T' /dev/shm 2>/dev/null)
+    [[ "$fstype" == "tmpfs" || "$fstype" == "ramfs" ]]
+}
+print_ram_only_failure() {
+    echo "RAM-only mode is on, but no RAM-backed (tmpfs) storage was found"
+    echo "at /dev/shm. Refusing to decrypt to disk. Troubleshooting:"
+    echo "  - Check it's mounted:    mount | grep /dev/shm"
+    echo "  - Check fstab has it:    grep shm /etc/fstab"
+    echo "  - Try remounting it:     sudo mount -t tmpfs -o size=64m tmpfs /dev/shm"
+    echo "  - In a container/chroot, /dev/shm may not exist unless whoever"
+    echo "    built the image added it."
+    echo "  - Or turn RAM-only mode off in Settings to allow the disk-backed"
+    echo "    fallback again (with the shred/SSD caveat that comes with it)."
+}
+require_ram_storage_or_warn() {
+    if is_shm_tmpfs || [[ "$RAM_ONLY_STRICT" != "1" ]]; then
+        return 0
+    fi
+    print_ram_only_failure
+    return 1
+}
 init_secure_env() {
     unset TMPDIR
-    if [[ -d "/dev/shm" ]]; then
+    if is_shm_tmpfs; then
         SECURE_TMP=$(mktemp -d -p /dev/shm pwman.XXXXXX)
+    elif [[ "$RAM_ONLY_STRICT" == "1" ]]; then
+        print_ram_only_failure
+        return 1
     else
-        echo "WARNING: /dev/shm not found. Falling back to a disk-backed" >&2
-        echo "temp directory - decrypted vault contents will touch a real" >&2
-        echo "disk, and 'shred' cannot reliably erase them afterward on" >&2
-        echo "SSDs or copy-on-write filesystems (btrfs, ZFS)." >&2
+        echo "WARNING: /dev/shm not found or not tmpfs. Falling back to a" >&2
+        echo "disk-backed temp directory - decrypted vault contents will" >&2
+        echo "touch a real disk, and 'shred' cannot reliably erase them" >&2
+        echo "afterward on SSDs or copy-on-write filesystems (btrfs, ZFS)." >&2
         sleep 2
         SECURE_TMP=$(mktemp -d -t pwman.XXXXXX)
     fi
     chmod 700 "$SECURE_TMP"
     export TMPDIR="$SECURE_TMP"
+    return 0
 }
 
 init_csv_tmp() {
     unset TMPDIR
-    if [[ -d "/dev/shm" ]]; then
+    if is_shm_tmpfs; then
         CSV_TMP=$(mktemp -d -p /dev/shm pwmancsv.XXXXXX)
+    elif [[ "$RAM_ONLY_STRICT" == "1" ]]; then
+        print_ram_only_failure
+        return 1
     else
-        echo "WARNING: /dev/shm not found. Falling back to a disk-backed" >&2
-        echo "temp directory for CSV handling (see init_secure_env)." >&2
+        echo "WARNING: /dev/shm not found or not tmpfs. Falling back to a" >&2
+        echo "disk-backed temp directory for CSV handling (see" >&2
+        echo "init_secure_env)." >&2
         sleep 2
         CSV_TMP=$(mktemp -d -t pwmancsv.XXXXXX)
     fi
     chmod 700 "$CSV_TMP"
     export TMPDIR="$CSV_TMP"
+    return 0
 }
-
-# Simple mkdir-based lock (mkdir is atomic even over NFS-ish filesystems)
-# so two instances of this script can't open the same vault at once and
-# silently clobber each other's changes on save.
 acquire_vault_lock() {
     local vault="$1"
     local lock="${vault}.lock"
@@ -281,7 +268,9 @@ acquire_vault_lock() {
 decrypt_vault() {
     local vault="$1"
     local type="$2"
-    init_secure_env
+    if ! init_secure_env; then
+        return 1
+    fi
 
     if [[ "$type" == "2" ]]; then
         if ! gpg -d --batch --yes --pinentry-mode loopback --no-symkey-cache --passphrase-fd 3 "$vault" 3<<<"$MASTER_PWD_2" 2>/dev/null | \
@@ -304,17 +293,6 @@ decrypt_vault() {
     fi
     return 0
 }
-
-# Saves are written to a temp file in the SAME directory as the target
-# and only moved into place once the whole gpg pipeline has succeeded, so
-# a failure partway through (disk full, gpg error, killed process) can
-# never leave a truncated vault sitting at $vault - the previous good
-# copy is untouched and the caller finds out something went wrong.
-# --s2k-digest-algo/--s2k-count pin the
-# passphrase-to-key stretching explicitly: gpg's own default S2K hash is
-# still SHA-1, which the data cipher (AES-256) doesn't depend on but the
-# key-stretching step has no reason to use given SHA-512 costs nothing
-# extra here.
 encrypt_vault() {
     local vault="$1"
     local type="$2"
@@ -353,9 +331,6 @@ encrypt_vault() {
     fi
     return 0
 }
-
-# 5-line schema (title,url,user,pass,note...) by inserting a blank URL
-# line. Runs once per decrypt; a no-op on vaults already at schema 2.
 migrate_vault_schema() {
     local meta="$SECURE_TMP/.pwman_metadata"
     local version="0"
@@ -389,11 +364,6 @@ migrate_vault_schema() {
         } > "$f"
         chmod 600 "$f"
     done
-
-    # Record the upgrade immediately so a second migrate_vault_schema call
-    # in the same session (e.g. import-into-existing-vault, which calls it
-    # after decrypt_vault like everyone else) is a true no-op instead of
-    # re-inserting a second blank URL line into already-migrated entries.
     printf 'PWMAN_SCHEMA=2\n' > "$meta"
     chmod 600 "$meta"
 }
@@ -671,13 +641,6 @@ vault_tui() {
         esac
     done
 }
-
-# --- CSV import/export -----------------------------------------------
-
-# Reads a plaintext CSV file and writes one entry file per data row into
-# dest_dir, using the current 5-line schema. Auto-detects Bitwarden and
-# KeePassXC column names (case-insensitive) plus a few common synonyms.
-# Prints "OK:<imported>:<skipped>" or "ERROR:<message>" on its last line.
 csv_import_entries() {
     local src_csv="$1"
     local dest_dir="$2"
@@ -772,9 +735,6 @@ except Exception as e:
 print("OK:%d:%d" % (count, skipped))
 PYEOF
 }
-
-# Reads every entry file in src_dir and writes a CSV to dest_csv in either
-# "bitwarden" or "keepassxc" format. Prints "OK:<count>" or "ERROR:<message>".
 csv_export_entries() {
     local src_dir="$1"
     local dest_csv="$2"
@@ -835,6 +795,10 @@ export_csv_menu() {
     if ! command -v python3 >/dev/null 2>&1; then
         echo "CSV export requires python3, which isn't installed."
         sleep 2
+        return
+    fi
+    if ! require_ram_storage_or_warn; then
+        sleep 3
         return
     fi
 
@@ -959,6 +923,10 @@ import_csv_menu() {
         sleep 2
         return
     fi
+    if ! require_ram_storage_or_warn; then
+        sleep 3
+        return
+    fi
 
     echo "=== Import CSV (Bitwarden / KeePassXC export) ==="
     local csv_path
@@ -979,7 +947,9 @@ import_csv_menu() {
     local target_choice
     read -r -p "Select (1/2): " target_choice
 
-    init_csv_tmp
+    if ! init_csv_tmp; then
+        return
+    fi
     local plain_csv="$CSV_TMP/import.csv"
 
     if ! gpg -d --batch --yes --pinentry-mode loopback --no-symkey-cache --passphrase-fd 3 \
@@ -1091,7 +1061,12 @@ import_csv_menu() {
             return
         fi
 
-        init_secure_env
+        if ! init_secure_env; then
+            scrub_master_pwds
+            wipe_csv_tmp
+            sleep 2
+            return
+        fi
     fi
 
     local result
@@ -1119,14 +1094,6 @@ import_csv_menu() {
     wipe_secure_tmp
     scrub_master_pwds
 }
-
-# --- Main menu ---------------------------------------------------------
-
-# Lets the user pick a previously-registered vault by name instead of
-# typing its path every time, or register a new one. Returns 0 if a vault
-# was opened (the caller should stop its own menu loop, matching how
-# opening a vault already behaves everywhere else in this script), 1 if
-# the user backed out without opening anything.
 select_vault_menu() {
     while true; do
         load_known_vaults
@@ -1259,6 +1226,11 @@ show_main_menu() {
         echo "4) Export Vault to CSV (Bitwarden/KeePassXC)"
         echo "5) Set Default Path for Vaults"
         echo "6) Set Backup Retention (currently ${BACKUP_RETENTION_DAYS} days)"
+        if [[ "$RAM_ONLY_STRICT" == "1" ]]; then
+            echo "7) RAM-only mode: ON  (refuses to decrypt if /dev/shm isn't available)"
+        else
+            echo "7) RAM-only mode: OFF (falls back to a disk-backed temp dir, with a warning)"
+        fi
         echo "---------------------------------"
 
         local default_vaults=()
@@ -1313,6 +1285,17 @@ show_main_menu() {
                 echo "Enter a whole number of days."
             fi
             sleep 2
+        elif [[ "$choice" == "7" ]]; then
+            if [[ "$RAM_ONLY_STRICT" == "1" ]]; then
+                RAM_ONLY_STRICT="0"
+                echo "RAM-only mode turned OFF."
+            else
+                RAM_ONLY_STRICT="1"
+                echo "RAM-only mode turned ON. Decrypting will now refuse to"
+                echo "fall back to disk if /dev/shm isn't available as tmpfs."
+            fi
+            save_config
+            sleep 2
         elif [[ "$choice" =~ ^[Qq]$ ]]; then
             cleanup
         elif [[ "$choice" =~ ^[a-zA-Z]$ ]]; then
@@ -1333,6 +1316,12 @@ open_vault() {
     if ! acquire_vault_lock "$CURRENT_VAULT"; then
         echo "This vault appears to already be open elsewhere (lock present)."
         echo "If you're sure that's not the case, remove: ${CURRENT_VAULT}.lock"
+        sleep 3
+        return
+    fi
+
+    if ! require_ram_storage_or_warn; then
+        release_vault_lock
         sleep 3
         return
     fi
@@ -1367,6 +1356,11 @@ open_vault() {
 }
 
 make_vault() {
+    if ! require_ram_storage_or_warn; then
+        sleep 3
+        return
+    fi
+
     local target_dir="${DEFAULT_VAULT_PATH:-$PWD}"
     read -r -p "Enter new vault name (e.g. personal): " v_name
     if [[ -z "$v_name" ]]; then return; fi
@@ -1420,7 +1414,11 @@ make_vault() {
         return
     fi
 
-    init_secure_env
+    if ! init_secure_env; then
+        scrub_master_pwds
+        sleep 2
+        return
+    fi
     if encrypt_vault "$target_path" "$v_type"; then
         echo "Vault created at $target_path"
     else
