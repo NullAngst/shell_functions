@@ -62,12 +62,12 @@ unpack() {
         local extracted=0
 
         case "$lower_base" in
-            *.tar.bz2|*.tbz2) tar -xvjf "$file" -C "$folder" && extracted=1 ;;
-            *.tar.gz|*.tgz)   tar -xvzf "$file" -C "$folder" && extracted=1 ;;
-            *.tar.xz)         tar -xvJf "$file" -C "$folder" && extracted=1 ;;
-            *.tar)            tar -xvf "$file" -C "$folder" && extracted=1 ;;
-            *.rar) unrar x "$file" "$folder/" && extracted=1 ;;
-            *.zip|*.zip.001|*.7z|*.7z.001) 7z x "$file" -o"$folder" -y && extracted=1 ;;
+            *.tar.bz2|*.tbz2) tar -xvjf "$file" -C "$folder" < /dev/null && extracted=1 ;;
+            *.tar.gz|*.tgz)   tar -xvzf "$file" -C "$folder" < /dev/null && extracted=1 ;;
+            *.tar.xz)         tar -xvJf "$file" -C "$folder" < /dev/null && extracted=1 ;;
+            *.tar)            tar -xvf "$file" -C "$folder" < /dev/null && extracted=1 ;;
+            *.rar) unrar x -or -y "$file" "$folder/" < /dev/null && extracted=1 ;;
+            *.zip|*.zip.001|*.7z|*.7z.001) 7z x "$file" -o"$folder" -aou -y < /dev/null && extracted=1 ;;
         esac
 
         if [ "$extracted" -eq 1 ]; then
