@@ -1,18 +1,5 @@
 #!/bin/bash
 
-#==============================================================================
-#   DESCRIPTION: A script to rip CDs to various formats, automatically fetching
-#                metadata, genres, composer info, and cover art from
-#                MusicBrainz. It organizes files into a clean, archival-quality
-#                directory structure with ReplayGain, HDA ripping, and auto-eject.
-#
-#  REQUIREMENTS: cdparanoia, flac, curl, jq, md5sum, eject, metaflac,
-#                and lame/oggenc for MP3/OGG. Optional: mediainfo
-#        AUTHOR: NullAngst
-#       CREATED: 2025-08-10
-#      REVISION: 5.0
-#==============================================================================
-
 set -euo pipefail
 
 # --- Configuration ---
@@ -101,7 +88,7 @@ echo
 
 # Safely format filenames (remove problematic characters)
 safe_filename() {
-    echo "$1" | sed 's/[\/:]/_/g; s/[*?"]//g; s/[[:space:]]*$//'
+    echo "$1" | sed 's/[\/:]/_/g; s/[*?"<>|]//g; s/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 
 # Parse cdparanoia output for track quality metrics
@@ -131,9 +118,12 @@ check_file_integrity() {
             fi
             ;;
         mp3|ogg)
-            # Check file size is reasonable (at least 1MB for audio)
+            # Sanity-check file size. This is a heuristic, not a real
+            # decode check: it only catches empty/truncated output, not
+            # corrupt audio. Kept low so short tracks (interludes, hidden
+            # bonus tracks) don't get falsely flagged and deleted.
             local size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
-            if [ "$size" -gt 1048576 ]; then
+            if [ "$size" -gt 51200 ]; then
                 return 0
             else
                 return 1
@@ -156,7 +146,9 @@ resolve_checkpoint_file() {
     # Encoders array may have multiple entries; join them for a stable key
     local enc_key
     enc_key=$(IFS=_; echo "${ENCODERS[*]:-unknown}")
-    local album_key="$SAFE_ALBUM_ARTIST-$SAFE_ALBUM_TITLE-$enc_key"
+    local disc_key=""
+    [ -n "${DISC_SUBDIR:-}" ] && disc_key="-$(safe_filename "$DISC_SUBDIR")"
+    local album_key="$SAFE_ALBUM_ARTIST-$SAFE_ALBUM_TITLE${disc_key}-$enc_key"
     local checkpoint_dir="$HOME/.cache/simplecd-ripper"
     echo "$checkpoint_dir/checkpoint-$album_key.json"
 }
@@ -218,7 +210,7 @@ human_size() {
 # --- Auto-detect CD Drive ---
 
 echo "Scanning for CD drives with a disc..."
-DRIVES=($(ls /dev/sr* 2>/dev/null || true))
+DRIVES=(/dev/sr*)
 VALID_DRIVES=()
 
 if [ ${#DRIVES[@]} -eq 0 ]; then
@@ -290,7 +282,10 @@ case $FORMAT_CHOICE in
         
         for fmt in $MULTI_FORMAT; do
             case $fmt in
-                1) ENCODERS+=("flac"); EXTENSIONS+=("flac") ;;
+                1)
+                    command_exists "flac" || error_exit "'flac' is not installed. Please install it for FLAC encoding."
+                    ENCODERS+=("flac"); EXTENSIONS+=("flac")
+                    ;;
                 2) ENCODERS+=("wav"); EXTENSIONS+=("wav") ;;
                 3) 
                     command_exists "lame" || error_exit "'lame' is not installed."
@@ -304,7 +299,8 @@ case $FORMAT_CHOICE in
         done
         
         if [ ${#ENCODERS[@]} -eq 0 ]; then
-            error_exit "No valid formats selected. Using FLAC as default."
+            warn "No valid formats selected. Using FLAC as default."
+            command_exists "flac" || error_exit "'flac' is not installed. Please install it for FLAC encoding."
             ENCODERS=("flac")
             EXTENSIONS=("flac")
         fi
@@ -339,7 +335,7 @@ echo "Attempting to retrieve CD information from MusicBrainz..."
 
 CDPARANOIA_TOC="$TEMP_DIR/cdparanoia_toc.txt"
 cdparanoia -Q -d "$CD_DEVICE" > "$CDPARANOIA_TOC" 2>&1
-TRACK_COUNT_ACTUAL=$(grep '^[[:space:]]*[0-9]\+\.' "$CDPARANOIA_TOC" | wc -l)
+TRACK_COUNT_ACTUAL=$(grep -cE '^[[:space:]]*[1-9][0-9]*\.' "$CDPARANOIA_TOC")
 
 if [ "$TRACK_COUNT_ACTUAL" -eq 0 ]; then
     error_exit "No audio tracks found on the disc or could not read the disc."
@@ -347,10 +343,13 @@ fi
 success "Found $TRACK_COUNT_ACTUAL tracks on the disc."
 
 # --- Construct the TOC string for the MusicBrainz API ---
+# Note: cdparanoia's "begin" column is a 0-based sector count. MusicBrainz's
+# disc ID calculation expects offsets relative to the 150-frame (2s) lead-in,
+# so 150 is added to every offset and to the leadout sector below.
 FIRST_TRACK_SECTOR=$(grep '^[[:space:]]*1\.' "$CDPARANOIA_TOC" | awk '{print $4}')
 TOTAL_SECTORS=$(grep 'TOTAL' "$CDPARANOIA_TOC" | awk '{print $2}')
-LEADOUT_SECTOR=$((FIRST_TRACK_SECTOR + TOTAL_SECTORS))
-OFFSETS=$(grep '^[[:space:]]*[0-9]\+\.' "$CDPARANOIA_TOC" | awk '{print $4}' | tr '\n' '+')
+LEADOUT_SECTOR=$((FIRST_TRACK_SECTOR + TOTAL_SECTORS + 150))
+OFFSETS=$(grep -E '^[[:space:]]*[1-9][0-9]*\.' "$CDPARANOIA_TOC" | awk '{print $4 + 150}' | tr '\n' '+')
 
 TOC_STRING="1+$TRACK_COUNT_ACTUAL+$LEADOUT_SECTOR+${OFFSETS%?}"
 verbose_echo "Constructed TOC for API: '$TOC_STRING'"
@@ -438,7 +437,6 @@ if [ "$METADATA_SOURCE" == "MusicBrainz" ]; then
     ALBUM_TITLE=$(jq -r --argjson idx "$SELECTED_INDEX" '.releases[$idx].title' "$MUSICBRAINZ_JSON")
     YEAR=$(jq -r --argjson idx "$SELECTED_INDEX" '.releases[$idx].date // ""' "$MUSICBRAINZ_JSON" | cut -d'-' -f1)
     ORIGINAL_DATE=$(jq -r --argjson idx "$SELECTED_INDEX" '.releases[$idx]."release-group"."first-release-date" // ""' "$MUSICBRAINZ_JSON" | cut -d'-' -f1)
-    TRACK_COUNT=$(jq --argjson idx "$SELECTED_INDEX" '.releases[$idx].media[0]."track-count"' "$MUSICBRAINZ_JSON" 2>/dev/null || echo "$TRACK_COUNT_ACTUAL")
     MBID=$(jq -r --argjson idx "$SELECTED_INDEX" '.releases[$idx].id' "$MUSICBRAINZ_JSON")
     RELEASE_URL="https://musicbrainz.org/release/$MBID"
 
@@ -447,8 +445,39 @@ if [ "$METADATA_SOURCE" == "MusicBrainz" ]; then
     [ -n "$ORIGINAL_DATE" ] && [ "$ORIGINAL_DATE" != "$YEAR" ] && echo "Original Release: $ORIGINAL_DATE"
     echo ""
 
+    # --- Multi-disc (medium) selection ---
+    # A release can span multiple physical discs (media). Previously this
+    # always read media[0], so ripping disc 2 of a 2-disc set would silently
+    # pull disc 1's tracklist. Ask which medium matches the disc in the drive.
+    MEDIA_INDEX=0
+    MEDIA_COUNT=$(jq --argjson idx "$SELECTED_INDEX" '.releases[$idx].media | length' "$MUSICBRAINZ_JSON" 2>/dev/null || echo "1")
+    if [ "$MEDIA_COUNT" -gt 1 ]; then
+        echo "This release has $MEDIA_COUNT discs. Which one is in the drive?"
+        jq -r --argjson idx "$SELECTED_INDEX" \
+            '.releases[$idx].media[] | "\(."track-count") tracks\(if .title and .title != "" then " - " + .title else "" end)"' \
+            "$MUSICBRAINZ_JSON" | nl -w2 -s'. '
+        read -p "Enter disc number [1-$MEDIA_COUNT]: " -r MEDIA_CHOICE
+        if [[ "$MEDIA_CHOICE" =~ ^[0-9]+$ ]] && [ "$MEDIA_CHOICE" -ge 1 ] && [ "$MEDIA_CHOICE" -le "$MEDIA_COUNT" ]; then
+            MEDIA_INDEX=$((MEDIA_CHOICE - 1))
+        else
+            warn "Invalid selection, defaulting to disc 1."
+        fi
+        DISC_SUBDIR="Disc $((MEDIA_INDEX + 1))"
+        echo ""
+    fi
+
+    TRACK_COUNT=$(jq --argjson idx "$SELECTED_INDEX" --argjson midx "$MEDIA_INDEX" \
+        '.releases[$idx].media[$midx]."track-count"' "$MUSICBRAINZ_JSON" 2>/dev/null || echo "$TRACK_COUNT_ACTUAL")
+
+    # MusicBrainz's track count is only as good as the release match. Trust
+    # the disc itself: cdparanoia already counted what's physically there.
+    if [ "$TRACK_COUNT" -ne "$TRACK_COUNT_ACTUAL" ]; then
+        warn "MusicBrainz reports $TRACK_COUNT tracks but the disc has $TRACK_COUNT_ACTUAL. Using the disc's count."
+        TRACK_COUNT=$TRACK_COUNT_ACTUAL
+    fi
+
     # --- Genre Selection ---
-    GENRES=($(jq -r --argjson idx "$SELECTED_INDEX" '.releases[$idx].genres[]?.name' "$MUSICBRAINZ_JSON" 2>/dev/null || true))
+    mapfile -t GENRES < <(jq -r --argjson idx "$SELECTED_INDEX" '.releases[$idx].genres[]?.name' "$MUSICBRAINZ_JSON" 2>/dev/null || true)
     if [ ${#GENRES[@]} -gt 0 ]; then
         if [ ${#GENRES[@]} -gt 1 ]; then
             echo "Found multiple genres. Please choose one:"
@@ -507,18 +536,18 @@ if [ "$METADATA_SOURCE" == "MusicBrainz" ]; then
 
     # --- Extract Track Titles and Composers ---
     for i in $(seq 0 $((TRACK_COUNT - 1))); do
-        title=$(jq -r --argjson idx "$SELECTED_INDEX" --argjson i "$i" \
-            '.releases[$idx].media[0].tracks[$i]?.title // ""' "$MUSICBRAINZ_JSON")
+        title=$(jq -r --argjson idx "$SELECTED_INDEX" --argjson midx "$MEDIA_INDEX" --argjson i "$i" \
+            '.releases[$idx].media[$midx].tracks[$i]?.title // ""' "$MUSICBRAINZ_JSON")
         TRACK_TITLES+=("$title")
         
-        composer=$(jq -r --argjson idx "$SELECTED_INDEX" --argjson i "$i" \
-            '[.releases[$idx].media[0].tracks[$i].recording.relations[]? | select(.type == "composer") | .artist.name] | .[0] // ""' \
+        composer=$(jq -r --argjson idx "$SELECTED_INDEX" --argjson midx "$MEDIA_INDEX" --argjson i "$i" \
+            '[.releases[$idx].media[$midx].tracks[$i].recording.relations[]? | select(.type == "composer") | .artist.name] | .[0] // ""' \
             "$MUSICBRAINZ_JSON" 2>/dev/null)
         COMPOSERS+=("$composer")
         
         # Get track artist (if different from album artist)
-        track_artist=$(jq -r --argjson idx "$SELECTED_INDEX" --argjson i "$i" \
-            '.releases[$idx].media[0].tracks[$i].recording."artist-credit"[0].name // ""' \
+        track_artist=$(jq -r --argjson idx "$SELECTED_INDEX" --argjson midx "$MEDIA_INDEX" --argjson i "$i" \
+            '.releases[$idx].media[$midx].tracks[$i].recording."artist-credit"[0].name // ""' \
             "$MUSICBRAINZ_JSON" 2>/dev/null)
         TRACK_ARTISTS+=("$track_artist")
         
@@ -562,30 +591,34 @@ fi
 
 # --- Metadata Review and Editing ---
 
-echo ""
-echo "================================================================================"
-echo "METADATA REVIEW"
-echo "================================================================================"
-echo ""
-echo "Album: $ALBUM_ARTIST - $ALBUM_TITLE"
-[ -n "$YEAR" ] && echo "Year: $YEAR"
-[ -n "$ORIGINAL_DATE" ] && echo "Original Release: $ORIGINAL_DATE"
-[ -n "$GENRE" ] && echo "Genre: $GENRE"
-[ -n "$DISC_SUBDIR" ] && echo "Disc: ${DISC_SUBDIR##* }"
-echo ""
-echo "Tracks:"
-for i in $(seq 1 $TRACK_COUNT); do
-    TRACK_TITLE=${TRACK_TITLES[$((i-1))]}
-    TRACK_ARTIST=${TRACK_ARTISTS[$((i-1))]}
-    COMPOSER=${COMPOSERS[$((i-1))]}
-    printf "  %2d. %-50s\n" "$i" "$TRACK_TITLE"
-    [ -n "$TRACK_ARTIST" ] && [ "$TRACK_ARTIST" != "$ALBUM_ARTIST" ] && printf "       Artist: %s\n" "$TRACK_ARTIST"
-    [ -n "$COMPOSER" ] && printf "       Composer: %s\n" "$COMPOSER"
-done
-echo ""
-read -p "Is this information correct? (y/n): " -r METADATA_CONFIRM
+while true; do
+    echo ""
+    echo "================================================================================"
+    echo "METADATA REVIEW"
+    echo "================================================================================"
+    echo ""
+    echo "Album: $ALBUM_ARTIST - $ALBUM_TITLE"
+    [ -n "$YEAR" ] && echo "Year: $YEAR"
+    [ -n "$ORIGINAL_DATE" ] && echo "Original Release: $ORIGINAL_DATE"
+    [ -n "$GENRE" ] && echo "Genre: $GENRE"
+    [ -n "$DISC_SUBDIR" ] && echo "Disc: ${DISC_SUBDIR##* }"
+    echo ""
+    echo "Tracks:"
+    for i in $(seq 1 $TRACK_COUNT); do
+        TRACK_TITLE=${TRACK_TITLES[$((i-1))]}
+        TRACK_ARTIST=${TRACK_ARTISTS[$((i-1))]}
+        COMPOSER=${COMPOSERS[$((i-1))]}
+        printf "  %2d. %-50s\n" "$i" "$TRACK_TITLE"
+        [ -n "$TRACK_ARTIST" ] && [ "$TRACK_ARTIST" != "$ALBUM_ARTIST" ] && printf "       Artist: %s\n" "$TRACK_ARTIST"
+        [ -n "$COMPOSER" ] && printf "       Composer: %s\n" "$COMPOSER"
+    done
+    echo ""
+    read -p "Is this information correct? (y/n): " -r METADATA_CONFIRM
 
-if [[ ! "$METADATA_CONFIRM" =~ ^[Yy]$ ]]; then
+    if [[ "$METADATA_CONFIRM" =~ ^[Yy]$ ]]; then
+        break
+    fi
+
     echo "Edit options:"
     echo "  1) Album artist"
     echo "  2) Album title"
@@ -594,7 +627,7 @@ if [[ ! "$METADATA_CONFIRM" =~ ^[Yy]$ ]]; then
     echo "  5) Edit individual track"
     echo "  6) Start over with manual entry"
     read -p "Select option (1-6) or press Enter to continue anyway: " -r EDIT_CHOICE
-    
+
     case $EDIT_CHOICE in
         1)
             read -p "New album artist: " -r ALBUM_ARTIST
@@ -610,16 +643,22 @@ if [[ ! "$METADATA_CONFIRM" =~ ^[Yy]$ ]]; then
             ;;
         5)
             read -p "Track number to edit: " -r TRACK_EDIT
-            if [[ "$TRACK_EDIT" =~ ^[0-9]+$ ]] && [ "$TRACK_EDIT" -ge 1 ] && [ "$TRACK_EDIT" -le $TRACK_COUNT ]; then
+            if [[ "$TRACK_EDIT" =~ ^[0-9]+$ ]] && [ "$TRACK_EDIT" -ge 1 ] && [ "$TRACK_EDIT" -le "$TRACK_COUNT" ]; then
                 read -p "New title: " -r NEW_TITLE
                 TRACK_TITLES[$((TRACK_EDIT-1))]="$NEW_TITLE"
             fi
             ;;
         6)
+            # exec replaces this process without running the EXIT trap,
+            # so clean up the temp dir explicitly before restarting.
+            cleanup
             exec "$0"
             ;;
+        "")
+            break
+            ;;
     esac
-fi
+done
 
 echo ""
 
@@ -742,36 +781,63 @@ if grep -q '^[[:space:]]*0\.' "$CDPARANOIA_TOC"; then
     if [ "$LAST_COMPLETED_TRACK" -eq 0 ]; then
         echo "Hidden track (pre-gap audio) found. Ripping track 0..."
         HDA_FILE="$OUTPUT_DIR/00. Hidden Track"
-        
-        for encoder_idx in "${!ENCODERS[@]}"; do
-            ENCODER="${ENCODERS[$encoder_idx]}"
-            EXT="${EXTENSIONS[$encoder_idx]}"
-            
-            HDA_OUTPUT="$HDA_FILE.$EXT"
-            set +e
-            cdparanoia -v -d "$CD_DEVICE" 0 - 2>/dev/null | flac -s --best -o "$TEMP_DIR/hda_temp.flac" -
-            HDA_EXIT=${PIPESTATUS[0]}
-            set -e
-            
-            if [ "$HDA_EXIT" -eq 0 ] && [ -s "$TEMP_DIR/hda_temp.flac" ]; then
-                # Convert if needed
-                case $ENCODER in
-                    flac)
-                        cp "$TEMP_DIR/hda_temp.flac" "$HDA_OUTPUT"
-                        ;;
-                    wav)
-                        flac -d -o "$HDA_OUTPUT" "$TEMP_DIR/hda_temp.flac"
-                        ;;
-                esac
-                success "Hidden track ripped to: $HDA_OUTPUT"
-                log_entry "INFO" "Hidden Track (Track 0): Successfully ripped"
-            else
-                warn "Failed to rip hidden track."
-                log_entry "WARN" "Hidden Track (Track 0): FAILED"
-            fi
-            rm -f "$TEMP_DIR/hda_temp.flac"
-        done
-        
+
+        if command_exists "flac"; then
+            for encoder_idx in "${!ENCODERS[@]}"; do
+                ENCODER="${ENCODERS[$encoder_idx]}"
+                EXT="${EXTENSIONS[$encoder_idx]}"
+
+                HDA_OUTPUT="$HDA_FILE.$EXT"
+                set +e
+                cdparanoia -v -d "$CD_DEVICE" 0 - 2>/dev/null | flac -s --best -o "$TEMP_DIR/hda_temp.flac" -
+                HDA_EXIT=${PIPESTATUS[0]}
+                set -e
+
+                if [ "$HDA_EXIT" -eq 0 ] && [ -s "$TEMP_DIR/hda_temp.flac" ]; then
+                    # Convert to the requested format
+                    set +e
+                    case $ENCODER in
+                        flac)
+                            cp "$TEMP_DIR/hda_temp.flac" "$HDA_OUTPUT"
+                            ;;
+                        wav)
+                            flac -d -f -o "$HDA_OUTPUT" "$TEMP_DIR/hda_temp.flac" 2>/dev/null
+                            ;;
+                        mp3)
+                            flac -d -f -o "$TEMP_DIR/hda_temp.wav" "$TEMP_DIR/hda_temp.flac" 2>/dev/null \
+                                && lame -S -b 320 "$TEMP_DIR/hda_temp.wav" "$HDA_OUTPUT" 2>/dev/null
+                            ;;
+                        ogg)
+                            flac -d -f -o "$TEMP_DIR/hda_temp.wav" "$TEMP_DIR/hda_temp.flac" 2>/dev/null \
+                                && oggenc -Q -q 10 "$TEMP_DIR/hda_temp.wav" -o "$HDA_OUTPUT" 2>/dev/null
+                            ;;
+                        *)
+                            warn "Don't know how to encode the hidden track to $ENCODER."
+                            ;;
+                    esac
+                    HDA_CONVERT_EXIT=$?
+                    set -e
+                    rm -f "$TEMP_DIR/hda_temp.wav"
+
+                    if [ "$HDA_CONVERT_EXIT" -eq 0 ] && [ -s "$HDA_OUTPUT" ]; then
+                        success "Hidden track ripped to: $HDA_OUTPUT"
+                        log_entry "INFO" "Hidden Track (Track 0, $ENCODER): Successfully ripped"
+                    else
+                        warn "Failed to encode hidden track to $ENCODER."
+                        log_entry "WARN" "Hidden Track (Track 0, $ENCODER): Encode FAILED"
+                        rm -f "$HDA_OUTPUT"
+                    fi
+                else
+                    warn "Failed to rip hidden track."
+                    log_entry "WARN" "Hidden Track (Track 0): Rip FAILED"
+                fi
+                rm -f "$TEMP_DIR/hda_temp.flac"
+            done
+        else
+            warn "flac is required to capture the hidden track; skipping HTOA rip."
+            log_entry "WARN" "Hidden Track (Track 0): Skipped, flac not installed"
+        fi
+
         {
             echo ""
             echo "================================================================================"
@@ -834,6 +900,9 @@ for i in $(seq 1 $TRACK_COUNT); do
             TRACK_END_TIME=$(date +%s)
             TRACK_DURATION=$((TRACK_END_TIME - TRACK_START_TIME))
             
+            # --- Stage 2: Encode from WAV ---
+            WAV_SIZE=$(stat -f%z "$TEMP_WAV_FILE" 2>/dev/null || stat -c%s "$TEMP_WAV_FILE" 2>/dev/null)
+
             # Log track rip details
             {
                 echo ""
@@ -844,10 +913,8 @@ for i in $(seq 1 $TRACK_COUNT); do
                 [ -n "$PREGAP" ] && echo "  Pre-gap: ${PREGAP}s"
                 [ -n "$PEAK_LEVEL" ] && echo "  Peak Level: ${PEAK_LEVEL}%"
                 echo "  Rip Duration: ${TRACK_DURATION}s"
+                echo "  WAV Size: $(human_size "$WAV_SIZE")"
             } >> "$LOG_FILE"
-
-            # --- Stage 2: Encode from WAV ---
-            WAV_SIZE=$(stat -f%z "$TEMP_WAV_FILE" 2>/dev/null || stat -c%s "$TEMP_WAV_FILE" 2>/dev/null)
             
             for encoder_idx in "${!ENCODERS[@]}"; do
                 ENCODER="${ENCODERS[$encoder_idx]}"
@@ -994,16 +1061,29 @@ TOTAL_RIPPING_TIME=$((RIPPING_END_TIME - RIPPING_START_TIME))
 
 # --- Post-Processing ---
 
-if [[ " ${ENCODERS[@]} " =~ " flac " ]]; then
-    echo "Applying ReplayGain tags to FLAC files..."
-    if metaflac --add-replay-gain "$OUTPUT_DIR"/*.flac 2>/dev/null; then
-        success "ReplayGain scanning complete."
-        log_entry "INFO" "ReplayGain scanning applied to FLAC files"
-    else
-        warn "ReplayGain application failed."
-        log_entry "WARN" "ReplayGain application failed"
+FLAC_SELECTED=false
+for enc in "${ENCODERS[@]}"; do
+    if [ "$enc" == "flac" ]; then
+        FLAC_SELECTED=true
+        break
     fi
-    echo ""
+done
+
+if [ "$FLAC_SELECTED" = true ]; then
+    FLAC_FILES=("$OUTPUT_DIR"/*.flac)
+    if [ ${#FLAC_FILES[@]} -eq 0 ]; then
+        warn "No FLAC files found to apply ReplayGain to."
+    else
+        echo "Applying ReplayGain tags to FLAC files..."
+        if metaflac --add-replay-gain "${FLAC_FILES[@]}" 2>/dev/null; then
+            success "ReplayGain scanning complete."
+            log_entry "INFO" "ReplayGain scanning applied to FLAC files"
+        else
+            warn "ReplayGain application failed."
+            log_entry "WARN" "ReplayGain application failed"
+        fi
+        echo ""
+    fi
 fi
 
 # --- Save Cover Art to Output Directory ---
@@ -1028,12 +1108,18 @@ CHECKSUM_PASSED=0
 CHECKSUM_FAILED=0
 
 for ext in "${EXTENSIONS[@]}"; do
-    if (cd "$OUTPUT_DIR" && md5sum -- *."$ext" 2>/dev/null >> "$LOG_FILE"); then
-        CHECKSUM_PASSED=$((CHECKSUM_PASSED + 1))
+    MATCHES=("$OUTPUT_DIR"/*."$ext")
+    if [ ${#MATCHES[@]} -eq 0 ]; then
+        continue
+    fi
+    if (cd "$OUTPUT_DIR" && md5sum -- *."$ext" >> "$LOG_FILE" 2>/dev/null); then
+        CHECKSUM_PASSED=$((CHECKSUM_PASSED + ${#MATCHES[@]}))
+    else
+        CHECKSUM_FAILED=$((CHECKSUM_FAILED + ${#MATCHES[@]}))
     fi
 done
 
-log_entry "INFO" "Checksum verification: $CHECKSUM_PASSED files verified"
+log_entry "INFO" "Checksum verification: $CHECKSUM_PASSED files verified, $CHECKSUM_FAILED failed"
 
 # --- Finalization ---
 
