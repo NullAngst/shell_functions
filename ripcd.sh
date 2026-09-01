@@ -147,7 +147,7 @@ resolve_checkpoint_file() {
     local enc_key
     enc_key=$(IFS=_; echo "${ENCODERS[*]:-unknown}")
     local disc_key=""
-    [ -n "${DISC_SUBDIR:-}" ] && disc_key="-$(safe_filename "$DISC_SUBDIR")"
+    [ "${TOTAL_DISCS:-1}" -gt 1 ] && disc_key="-disc${DISC_NUMBER:-1}"
     local album_key="$SAFE_ALBUM_ARTIST-$SAFE_ALBUM_TITLE${disc_key}-$enc_key"
     local checkpoint_dir="$HOME/.cache/simplecd-ripper"
     echo "$checkpoint_dir/checkpoint-$album_key.json"
@@ -369,7 +369,9 @@ RELEASE_URL=""
 SUCCESS_COUNT=0
 COVER_ART_FILE=""
 GENRE=""
-DISC_SUBDIR=""
+COMMENT=""
+DISC_NUMBER=1
+TOTAL_DISCS=1
 METADATA_SOURCE="Manual"
 declare -a TRACK_TITLES=()
 declare -a COMPOSERS=()
@@ -462,7 +464,8 @@ if [ "$METADATA_SOURCE" == "MusicBrainz" ]; then
         else
             warn "Invalid selection, defaulting to disc 1."
         fi
-        DISC_SUBDIR="Disc $((MEDIA_INDEX + 1))"
+        TOTAL_DISCS=$MEDIA_COUNT
+        DISC_NUMBER=$((MEDIA_INDEX + 1))
         echo ""
     fi
 
@@ -497,6 +500,9 @@ if [ "$METADATA_SOURCE" == "MusicBrainz" ]; then
     else
         warn "No genres found on MusicBrainz."
     fi
+    echo ""
+
+    read -p "Comment (optional): " -r COMMENT
     echo ""
 
     # --- Fetch Cover Art (highest quality via CAA API) ---
@@ -562,16 +568,24 @@ else
     read -p "Year (optional): " -r YEAR
     read -p "Original Release Year (optional): " -r ORIGINAL_DATE
     read -p "Genre (optional): " -r GENRE
+    read -p "Comment (optional): " -r COMMENT
     echo ""
 
     # --- Multi-disc Handling for Manual Entry ---
     read -p "Is this part of a multi-disc set? (y/n): " -r IS_MULTI
     if [[ "$IS_MULTI" =~ ^[Yy]$ ]]; then
-        read -p "Please enter the disc number: " -r DISC_NUMBER
-        if [[ "$DISC_NUMBER" =~ ^[0-9]+$ ]]; then
-            DISC_SUBDIR="Disc $DISC_NUMBER"
+        read -p "Disc number: " -r DISC_NUMBER_INPUT
+        read -p "Total number of discs: " -r TOTAL_DISCS_INPUT
+        if [[ "$DISC_NUMBER_INPUT" =~ ^[0-9]+$ ]]; then
+            DISC_NUMBER=$DISC_NUMBER_INPUT
         else
-            warn "Invalid disc number. Proceeding without disc subdirectory."
+            warn "Invalid disc number. Defaulting to disc 1."
+        fi
+        if [[ "$TOTAL_DISCS_INPUT" =~ ^[0-9]+$ ]] && [ "$TOTAL_DISCS_INPUT" -ge "$DISC_NUMBER" ]; then
+            TOTAL_DISCS=$TOTAL_DISCS_INPUT
+        else
+            warn "Invalid disc total. Defaulting to $DISC_NUMBER."
+            TOTAL_DISCS=$DISC_NUMBER
         fi
     fi
     echo ""
@@ -601,7 +615,8 @@ while true; do
     [ -n "$YEAR" ] && echo "Year: $YEAR"
     [ -n "$ORIGINAL_DATE" ] && echo "Original Release: $ORIGINAL_DATE"
     [ -n "$GENRE" ] && echo "Genre: $GENRE"
-    [ -n "$DISC_SUBDIR" ] && echo "Disc: ${DISC_SUBDIR##* }"
+    [ -n "$COMMENT" ] && echo "Comment: $COMMENT"
+    [ "$TOTAL_DISCS" -gt 1 ] && echo "Disc: $DISC_NUMBER of $TOTAL_DISCS"
     echo ""
     echo "Tracks:"
     for i in $(seq 1 $TRACK_COUNT); do
@@ -624,9 +639,10 @@ while true; do
     echo "  2) Album title"
     echo "  3) Year"
     echo "  4) Genre"
-    echo "  5) Edit individual track"
-    echo "  6) Start over with manual entry"
-    read -p "Select option (1-6) or press Enter to continue anyway: " -r EDIT_CHOICE
+    echo "  5) Comment"
+    echo "  6) Edit individual track"
+    echo "  7) Start over with manual entry"
+    read -p "Select option (1-7) or press Enter to continue anyway: " -r EDIT_CHOICE
 
     case $EDIT_CHOICE in
         1)
@@ -642,13 +658,16 @@ while true; do
             read -p "New genre: " -r GENRE
             ;;
         5)
+            read -p "New comment: " -r COMMENT
+            ;;
+        6)
             read -p "Track number to edit: " -r TRACK_EDIT
             if [[ "$TRACK_EDIT" =~ ^[0-9]+$ ]] && [ "$TRACK_EDIT" -ge 1 ] && [ "$TRACK_EDIT" -le "$TRACK_COUNT" ]; then
                 read -p "New title: " -r NEW_TITLE
                 TRACK_TITLES[$((TRACK_EDIT-1))]="$NEW_TITLE"
             fi
             ;;
-        6)
+        7)
             # exec replaces this process without running the EXIT trap,
             # so clean up the temp dir explicitly before restarting.
             cleanup
@@ -667,11 +686,7 @@ echo ""
 SAFE_ALBUM_ARTIST=$(safe_filename "$ALBUM_ARTIST")
 SAFE_ALBUM_TITLE=$(safe_filename "$ALBUM_TITLE")
 
-if [ -n "$DISC_SUBDIR" ]; then
-    OUTPUT_DIR="$SAVE_DIR/$SAFE_ALBUM_ARTIST/$SAFE_ALBUM_TITLE/$DISC_SUBDIR"
-else
-    OUTPUT_DIR="$SAVE_DIR/$SAFE_ALBUM_ARTIST/$SAFE_ALBUM_TITLE"
-fi
+OUTPUT_DIR="$SAVE_DIR/$SAFE_ALBUM_ARTIST/$SAFE_ALBUM_ARTIST - $SAFE_ALBUM_TITLE"
 
 echo "Creating output directory: $OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR" || error_exit "Could not create output directory."
@@ -698,9 +713,15 @@ echo ""
 
 # --- Initialize Log File ---
 
-LOG_FILE="$OUTPUT_DIR/rip_log.txt"
-CUE_FILE="$OUTPUT_DIR/$(safe_filename "$ALBUM_TITLE").cue"
-STATS_FILE="$OUTPUT_DIR/rip_stats.json"
+if [ "$TOTAL_DISCS" -gt 1 ]; then
+    LOG_FILE="$OUTPUT_DIR/rip_log_disc${DISC_NUMBER}.txt"
+    CUE_FILE="$OUTPUT_DIR/$(safe_filename "$ALBUM_TITLE") (Disc $DISC_NUMBER).cue"
+    STATS_FILE="$OUTPUT_DIR/rip_stats_disc${DISC_NUMBER}.json"
+else
+    LOG_FILE="$OUTPUT_DIR/rip_log.txt"
+    CUE_FILE="$OUTPUT_DIR/$(safe_filename "$ALBUM_TITLE").cue"
+    STATS_FILE="$OUTPUT_DIR/rip_stats.json"
+fi
 
 DRIVE_MODEL=$(grep -oP 'CDROM model sensed sensed:\s*\K.*' "$CDPARANOIA_TOC" 2>/dev/null | xargs || echo "Unknown")
 
@@ -712,7 +733,7 @@ DRIVE_MODEL=$(grep -oP 'CDROM model sensed sensed:\s*\K.*' "$CDPARANOIA_TOC" 2>/
     echo "Album Information:"
     echo "  Artist: $ALBUM_ARTIST"
     echo "  Title: $ALBUM_TITLE"
-    [ -n "$DISC_SUBDIR" ] && echo "  Disc: ${DISC_SUBDIR##* }"
+    [ "$TOTAL_DISCS" -gt 1 ] && echo "  Disc: $DISC_NUMBER of $TOTAL_DISCS"
     [ -n "$YEAR" ] && echo "  Year: $YEAR"
     [ -n "$ORIGINAL_DATE" ] && echo "  Original Release: $ORIGINAL_DATE"
     [ -n "$GENRE" ] && echo "  Genre: $GENRE"
@@ -780,7 +801,11 @@ DRIVE_MODEL=$(grep -oP 'CDROM model sensed sensed:\s*\K.*' "$CDPARANOIA_TOC" 2>/
 if grep -q '^[[:space:]]*0\.' "$CDPARANOIA_TOC"; then
     if [ "$LAST_COMPLETED_TRACK" -eq 0 ]; then
         echo "Hidden track (pre-gap audio) found. Ripping track 0..."
-        HDA_FILE="$OUTPUT_DIR/00. Hidden Track"
+        if [ "$TOTAL_DISCS" -gt 1 ]; then
+            HDA_FILE="$OUTPUT_DIR/$DISC_NUMBER-00. Hidden Track"
+        else
+            HDA_FILE="$OUTPUT_DIR/00. Hidden Track"
+        fi
 
         if command_exists "flac"; then
             for encoder_idx in "${!ENCODERS[@]}"; do
@@ -861,7 +886,11 @@ for i in $(seq 1 $TRACK_COUNT); do
         continue
     fi
     
-    TRACK_NUM=$(printf "%02d" $i)
+    if [ "$TOTAL_DISCS" -gt 1 ]; then
+        TRACK_NUM="$DISC_NUMBER-$(printf "%02d" $i)"
+    else
+        TRACK_NUM=$(printf "%02d" $i)
+    fi
     TRACK_TITLE=${TRACK_TITLES[$((i-1))]}
     COMPOSER=${COMPOSERS[$((i-1))]}
     TRACK_ARTIST=${TRACK_ARTISTS[$((i-1))]}
@@ -932,15 +961,19 @@ for i in $(seq 1 $TRACK_COUNT); do
                         
                         ENCODE_TAGS=()
                         ENCODE_TAGS+=(-T "ARTIST=${TRACK_ARTIST:-$ALBUM_ARTIST}")
-                        ENCODE_TAGS+=(-T "ALBUM=$ALBUM_TITLE")
-                        ENCODE_TAGS+=(-T "ALBUMARTIST=$ALBUM_ARTIST")
                         ENCODE_TAGS+=(-T "TITLE=$TRACK_TITLE")
-                        ENCODE_TAGS+=(-T "TRACKNUMBER=$i")
-                        ENCODE_TAGS+=(-T "TOTALTRACKS=$TRACK_COUNT")
+                        ENCODE_TAGS+=(-T "ALBUM=$ALBUM_TITLE")
                         [ -n "$YEAR" ] && ENCODE_TAGS+=(-T "DATE=$YEAR")
-                        [ -n "$ORIGINAL_DATE" ] && [ "$ORIGINAL_DATE" != "$YEAR" ] && ENCODE_TAGS+=(-T "ORIGINALDATE=$ORIGINAL_DATE")
+                        ENCODE_TAGS+=(-T "TRACKNUMBER=$i")
                         [ -n "$GENRE" ] && ENCODE_TAGS+=(-T "GENRE=$GENRE")
+                        ENCODE_TAGS+=(-T "PERFORMER=$ALBUM_ARTIST")
                         [ -n "$COMPOSER" ] && ENCODE_TAGS+=(-T "COMPOSER=$COMPOSER")
+                        ENCODE_TAGS+=(-T "ALBUMARTIST=$ALBUM_ARTIST")
+                        ENCODE_TAGS+=(-T "DISCNUMBER=$DISC_NUMBER")
+                        ENCODE_TAGS+=(-T "TOTALDISCS=$TOTAL_DISCS")
+                        ENCODE_TAGS+=(-T "TOTALTRACKS=$TRACK_COUNT")
+                        [ -n "$COMMENT" ] && ENCODE_TAGS+=(-T "COMMENT=$COMMENT")
+                        [ -n "$ORIGINAL_DATE" ] && [ "$ORIGINAL_DATE" != "$YEAR" ] && ENCODE_TAGS+=(-T "ORIGINALDATE=$ORIGINAL_DATE")
                         [ -n "$MBID" ] && ENCODE_TAGS+=(-T "MUSICBRAINZ_ALBUMID=$MBID")
                         
                         if flac -s --best --verify $PICTURE_OPTION "${ENCODE_TAGS[@]}" "$TEMP_WAV_FILE" -o "$OUTPUT_FILE" 2>/dev/null; then
@@ -980,11 +1013,13 @@ for i in $(seq 1 $TRACK_COUNT); do
                             --tt "$TRACK_TITLE"
                             --ta "${TRACK_ARTIST:-$ALBUM_ARTIST}"
                             --tl "$ALBUM_TITLE"
-                            --tp "$ALBUM_ARTIST"
-                            --tn "$i")
+                            --tn "$i/$TRACK_COUNT"
+                            --tv "TPE2=$ALBUM_ARTIST"
+                            --tv "TPOS=$DISC_NUMBER/$TOTAL_DISCS")
                         [ -n "$YEAR" ]     && LAME_ARGS+=(--ty "$YEAR")
                         [ -n "$GENRE" ]    && LAME_ARGS+=(--tg "$GENRE")
-                        [ -n "$COMPOSER" ] && LAME_ARGS+=(--tc "$COMPOSER")
+                        [ -n "$COMPOSER" ] && LAME_ARGS+=(--tv "TCOM=$COMPOSER")
+                        [ -n "$COMMENT" ]  && LAME_ARGS+=(--tc "$COMMENT")
                         if lame "${LAME_ARGS[@]}" "$TEMP_WAV_FILE" "$OUTPUT_FILE" 2>/dev/null; then
                             if check_file_integrity "$OUTPUT_FILE"; then
                                 ENCODE_END=$(date +%s)
@@ -1012,7 +1047,13 @@ for i in $(seq 1 $TRACK_COUNT); do
                             -N "$i")
                         [ -n "$YEAR" ]     && OGGENC_ARGS+=(-d "$YEAR")
                         [ -n "$GENRE" ]    && OGGENC_ARGS+=(-G "$GENRE")
+                        OGGENC_ARGS+=(-c "PERFORMER=$ALBUM_ARTIST")
                         [ -n "$COMPOSER" ] && OGGENC_ARGS+=(-c "COMPOSER=$COMPOSER")
+                        OGGENC_ARGS+=(-c "ALBUMARTIST=$ALBUM_ARTIST")
+                        OGGENC_ARGS+=(-c "DISCNUMBER=$DISC_NUMBER")
+                        OGGENC_ARGS+=(-c "TOTALDISCS=$TOTAL_DISCS")
+                        OGGENC_ARGS+=(-c "TOTALTRACKS=$TRACK_COUNT")
+                        [ -n "$COMMENT" ] && OGGENC_ARGS+=(-c "COMMENT=$COMMENT")
                         if oggenc "${OGGENC_ARGS[@]}" "$TEMP_WAV_FILE" -o "$OUTPUT_FILE" 2>/dev/null; then
                             if check_file_integrity "$OUTPUT_FILE"; then
                                 ENCODE_END=$(date +%s)
@@ -1108,11 +1149,15 @@ CHECKSUM_PASSED=0
 CHECKSUM_FAILED=0
 
 for ext in "${EXTENSIONS[@]}"; do
-    MATCHES=("$OUTPUT_DIR"/*."$ext")
+    if [ "$TOTAL_DISCS" -gt 1 ]; then
+        MATCHES=("$OUTPUT_DIR/$DISC_NUMBER"-*."$ext")
+    else
+        MATCHES=("$OUTPUT_DIR"/*."$ext")
+    fi
     if [ ${#MATCHES[@]} -eq 0 ]; then
         continue
     fi
-    if (cd "$OUTPUT_DIR" && md5sum -- *."$ext" >> "$LOG_FILE" 2>/dev/null); then
+    if (cd "$OUTPUT_DIR" && md5sum -- "${MATCHES[@]##*/}" >> "$LOG_FILE" 2>/dev/null); then
         CHECKSUM_PASSED=$((CHECKSUM_PASSED + ${#MATCHES[@]}))
     else
         CHECKSUM_FAILED=$((CHECKSUM_FAILED + ${#MATCHES[@]}))
