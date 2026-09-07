@@ -16,6 +16,15 @@ Each of these files detects at runtime whether it's running under `bash` or
 `zsh` and adjusts its sourced-vs-executed check accordingly, so the same
 file sources cleanly into either shell.
 
+A file can expose more than one command from a single script by declaring
+them in a `# COMMANDS: name1 name2` header comment (see
+`audio_convert_functions.sh`, which declares `2mp3 2flac 2ogg`). The
+installer symlinks each declared name to the file instead of just the
+filename, and the file dispatches on `$0`'s basename to know which
+function to call when run directly. Running such a file under its own
+filename (e.g. `./audio_convert_functions.sh foo.wav`) isn't a valid
+invocation; use one of the declared command names instead, or source it.
+
 A handful of files (`file_encrypt.sh`, `folder_encrypt.sh`, `pw-manager.sh`,
 `ufw_tui.sh`, `funcupdate.sh`) are standalone scripts instead of sourceable
 functions; see [Standalone Scripts](#standalone-scripts) below. They still
@@ -77,8 +86,15 @@ To run the commands without the `.sh` extension, symlink them into your local bi
 ```zsh
 mkdir -p ~/.local/bin
 for f in ~/.config/zsh/functions/*.sh; do
-    name=$(basename "$f" .sh)
-    ln -sf "$f" "$HOME/.local/bin/$name"
+    base=$(basename "$f" .sh)
+    commands=$(grep -m1 '^# COMMANDS:' "$f" | cut -d: -f2-)
+    if [[ -n "$commands" ]]; then
+        for name in $commands; do
+            ln -sf "$f" "$HOME/.local/bin/$name"
+        done
+    else
+        ln -sf "$f" "$HOME/.local/bin/$base"
+    fi
 done
 ```
 
@@ -103,8 +119,15 @@ Symlink each script (without the `.sh` extension) into a directory that is alrea
 
 ```zsh
 for f in /usr/local/lib/shell-functions/*.sh; do
-    name=$(basename "$f" .sh)
-    sudo ln -sf "$f" "/usr/local/bin/$name"
+    base=$(basename "$f" .sh)
+    commands=$(grep -m1 '^# COMMANDS:' "$f" | cut -d: -f2-)
+    if [[ -n "$commands" ]]; then
+        for name in $commands; do
+            sudo ln -sf "$f" "/usr/local/bin/$name"
+        done
+    else
+        sudo ln -sf "$f" "/usr/local/bin/$base"
+    fi
 done
 ```
 
@@ -124,8 +147,15 @@ To run the commands without the `.sh` extension, symlink them into your local bi
 ```bash
 mkdir -p ~/.local/bin
 for f in ~/.config/bash/functions/*.sh; do
-    name=$(basename "$f" .sh)
-    ln -sf "$f" "$HOME/.local/bin/$name"
+    base=$(basename "$f" .sh)
+    commands=$(grep -m1 '^# COMMANDS:' "$f" | cut -d: -f2-)
+    if [[ -n "$commands" ]]; then
+        for name in $commands; do
+            ln -sf "$f" "$HOME/.local/bin/$name"
+        done
+    else
+        ln -sf "$f" "$HOME/.local/bin/$base"
+    fi
 done
 ```
 
@@ -150,8 +180,15 @@ Symlink each script (without the `.sh` extension) into a directory that is alrea
 
 ```bash
 for f in /usr/local/lib/shell-functions/*.sh; do
-    name=$(basename "$f" .sh)
-    sudo ln -sf "$f" "/usr/local/bin/$name"
+    base=$(basename "$f" .sh)
+    commands=$(grep -m1 '^# COMMANDS:' "$f" | cut -d: -f2-)
+    if [[ -n "$commands" ]]; then
+        for name in $commands; do
+            sudo ln -sf "$f" "/usr/local/bin/$name"
+        done
+    else
+        sudo ln -sf "$f" "/usr/local/bin/$base"
+    fi
 done
 ```
 
@@ -172,6 +209,9 @@ file, prefixed with its own start timestamp, before it does anything else.
   ones overwritten.
 - `scrmgr` intentionally isn't named `screen`, so it won't shadow the real
   `screen` binary.
+- Only `audio_convert_functions.sh` currently uses the `# COMMANDS:` header
+  to expose more than one name from a single file; every other function
+  file symlinks under its own filename.
 - `ufw_tui` and `funcupdate` both require root (run with `sudo`); `pw-manager`
 - `file_encrypt`/`folder_encrypt` and `pw-manager`'s vault encryption all use
   GPG symmetric AES-256, but they're independent tools with separate on-disk
