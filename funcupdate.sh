@@ -47,11 +47,22 @@ cp "$TEMP_DIR"/*.sh /usr/local/lib/shell-functions/
 # Make the copied scripts executable
 chmod +x /usr/local/lib/shell-functions/*.sh
 
-# Symlink each script into /usr/local/bin so they are on everyone's PATH
+# Symlink each script into /usr/local/bin so they are on everyone's PATH.
+# Most files expose one command matching their own filename. A file that
+# exposes more than one (declared via a "# COMMANDS: name1 name2" header
+# line, e.g. audio_convert_functions.sh) gets a symlink for each name.
 for f in /usr/local/lib/shell-functions/*.sh; do
-    name=$(basename "$f" .sh)
-    ln -sf "$f" "/usr/local/bin/$name"
-    echo "Symlinked: $name -> $f"
+    base=$(basename "$f" .sh)
+    commands=$(grep -m1 '^# COMMANDS:' "$f" | cut -d: -f2-)
+    if [[ -n "$commands" ]]; then
+        for name in $commands; do
+            ln -sf "$f" "/usr/local/bin/$name"
+            echo "Symlinked: $name -> $f"
+        done
+    else
+        ln -sf "$f" "/usr/local/bin/$base"
+        echo "Symlinked: $base -> $f"
+    fi
 done
 
 echo "Update complete. The latest functions are available system-wide."
