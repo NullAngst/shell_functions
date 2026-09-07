@@ -5,6 +5,8 @@
 # the same underlying conversion logic, which is why this stays as one file
 # instead of being split like the other functions in this set.
 #
+# COMMANDS: 2mp3 2flac 2ogg
+#
 # Usage:
 #   2mp3  [-v] <file_or_dir>   Convert to MP3  (default: 320k CBR, -v: LAME V0 VBR)
 #   2flac [-v] <file_or_dir>   Convert to FLAC (lossless; -v is ignored)
@@ -169,3 +171,31 @@ _convert_audio() {
 2mp3() { _convert_audio mp3 "$@"; }
 2flac() { _convert_audio flac "$@"; }
 2ogg() { _convert_audio ogg "$@"; }
+
+# --- Sourced-vs-executed dispatch --------------------------------------
+# Sourcing this file only defines the three functions above. Running it
+# directly (as it will be when invoked through one of the 2mp3/2flac/2ogg
+# symlinks the installer creates) needs to actually call one of them,
+# since a script's functions vanish with the subprocess otherwise. Which
+# one to call is decided by the name it was invoked as, not the file's
+# own name, since three different symlinks point at this one file.
+_audio_convert_sourced() {
+    if [ -n "$ZSH_VERSION" ]; then
+        case $ZSH_EVAL_CONTEXT in *:file) return 0 ;; esac
+        return 1
+    fi
+    [[ "${BASH_SOURCE[0]}" != "${0}" ]]
+}
+
+if ! _audio_convert_sourced; then
+    case "$(basename -- "$0")" in
+        2mp3)  2mp3  "$@" ;;
+        2flac) 2flac "$@" ;;
+        2ogg)  2ogg  "$@" ;;
+        *)
+            echo "Run this as 2mp3, 2flac, or 2ogg (via the installed symlinks), or source the file to use those functions directly." >&2
+            exit 1
+            ;;
+    esac
+    exit $?
+fi
