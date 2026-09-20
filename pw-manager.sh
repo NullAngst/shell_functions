@@ -96,7 +96,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 sanitize_display() {
-    printf '%s' "$1" | tr -d '\000-\010\013-\037\177'
+    # Convert tabs to spaces first: entry fields sanitized on the way in are
+    # later used as tab-delimited sort keys in filter_entries, so a literal
+    # tab in a title/username would split the wrong way. Newlines are kept
+    # (notes can be multi-line); other control bytes are stripped.
+    printf '%s' "$1" | tr '\t' ' ' | tr -d '\000-\010\013-\037\177'
 }
 
 check_dependencies() {
@@ -675,7 +679,7 @@ def clean_line(s):
     # strips other control/escape bytes a terminal could act on later
     # when this field gets displayed - an imported CSV is untrusted
     # input as far as that goes.
-    s = s.replace("\r", " ").replace("\n", " ").strip()
+    s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
     return CONTROL_RE.sub("", s)
 
 
