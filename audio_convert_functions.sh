@@ -180,8 +180,13 @@ _convert_audio() {
 # one to call is decided by the name it was invoked as, not the file's
 # own name, since three different symlinks point at this one file.
 _audio_convert_sourced() {
-    if [ -n "$ZSH_VERSION" ]; then
-        case $ZSH_EVAL_CONTEXT in *:file) return 0 ;; esac
+    if [ -n "${ZSH_VERSION:-}" ]; then
+        # When this check runs inside a function, zsh appends ":shfunc" to
+        # ZSH_EVAL_CONTEXT, so a bare "*:file)" pattern no longer matches a
+        # sourced file. Match both the file-scope and in-function forms.
+        case $ZSH_EVAL_CONTEXT in
+            *:file|*:file:*) return 0 ;;
+        esac
         return 1
     fi
     [[ "${BASH_SOURCE[0]}" != "${0}" ]]
