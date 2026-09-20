@@ -140,11 +140,15 @@ update_zypper() {
 update_pacman() {
     log_section "Pacman (Arch/Manjaro)"
     run_cmd pacman -Syu --noconfirm
-    # Remove orphaned packages
-    ORPHANS=$(pacman -Qdtq 2>/dev/null || true)
-    if [[ -n "$ORPHANS" ]]; then
-        log "Removing orphaned packages..."
-        echo "$ORPHANS" | xargs -r pacman -Rns --noconfirm >> "$LOG_FILE" 2>&1 || true
+    # Remove orphaned packages. Collect them into an array and hand them to
+    # run_cmd so this respects the -l/--log flag and the error counter the
+    # same way every other command does, instead of unconditionally writing
+    # to the log file.
+    local orphans
+    mapfile -t orphans < <(pacman -Qdtq 2>/dev/null || true)
+    if [[ ${#orphans[@]} -gt 0 ]]; then
+        log "Removing ${#orphans[@]} orphaned package(s)..."
+        run_cmd pacman -Rns --noconfirm -- "${orphans[@]}"
     fi
     run_cmd pacman -Sc --noconfirm
 }
