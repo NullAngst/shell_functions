@@ -88,7 +88,9 @@ echo
 
 # Safely format filenames (remove problematic characters)
 safe_filename() {
-    echo "$1" | sed 's/[\/:]/_/g; s/[*?"<>|]//g; s/^[[:space:]]*//; s/[[:space:]]*$//'
+    # printf, not echo: a title beginning with -n/-e/-E would otherwise be
+    # swallowed by echo as an option flag rather than printed.
+    printf '%s' "$1" | sed 's/[\/:]/_/g; s/[*?"<>|]//g; s/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 
 # Parse cdparanoia output for track quality metrics
