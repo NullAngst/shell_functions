@@ -20,11 +20,12 @@ moveav     : Move and sort folders of media into images/, videos/, and audio/
 shredfile  : Runs shred against a file with proper arguments
 shredfolder: Runs shred against a folder with proper arguments
 ffile      : Forensic file analysis -- stat, hashes, hex, strings, entropy, metadata
+decode     : Try every common decoding of a string (base64/32/85, hex, octal, decimal, binary, URL, ROT13/47, Atbash, HTML entities, all 25 Caesar shifts)
 cleandir   : Removes empty folders in the current dir (Usage: cleandir [-r] for recursive)
 2mp3       : Convert a file or folder of audio to MP3 (Usage: 2mp3 [-v] <file_or_dir>)
 2flac      : Convert a file or folder of audio to FLAC (Usage: 2flac <file_or_dir>)
 2ogg       : Convert a file or folder of audio to OGG (Usage: 2ogg [-v] <file_or_dir>)
-system_update  : Checks for package manager and secondary managers (pacman, flatpak, snap) and runs their full update commands.
+system_update  : Detects the native package manager (apt/dnf/yum/zypper/pacman+AUR/apk/xbps/emerge/nix) plus Flatpak/Snap and runs their full update commands. Requires root.
 ripcd   : Interactive terminal CD ripper. Fetches metadata, coverart, writes replaygain tags on FLAC.
 funchelp   : Displays this help menu
 
