@@ -25,11 +25,17 @@ function to call when run directly. Running such a file under its own
 filename (e.g. `./audio_convert_functions.sh foo.wav`) isn't a valid
 invocation; use one of the declared command names instead, or source it.
 
-A handful of files (`file_encrypt.sh`, `folder_encrypt.sh`, `pw-manager.sh`,
-`ufw_tui.sh`, `funcupdate.sh`) are standalone scripts instead of sourceable
-functions; see [Standalone Scripts](#standalone-scripts) below. They still
-install and symlink the same way as everything else, they just don't do
-anything useful if you `source` them; run them directly.
+A handful of files (`decode.sh`, `file_encrypt.sh`, `folder_encrypt.sh`,
+`pw-manager.sh`, `ufw_tui.sh`, `funcupdate.sh`) are standalone scripts instead
+of sourceable functions; see [Standalone Scripts](#standalone-scripts) below.
+They still install and symlink the same way as everything else, they just
+don't do anything useful if you `source` them (and some, like `decode.sh`,
+will `exit` your shell if sourced with no arguments); run them directly.
+
+`system_update.sh` and `ripcd.sh` are likewise executed scripts rather than
+sourceable functions, but are listed under [Functions](#functions) below
+because they behave like single commands. Invoke them by name; don't source
+them.
 
 ## Functions
 
@@ -46,7 +52,7 @@ anything useful if you `source` them; run them directly.
 | `ffile.sh` | `ffile` | Forensic file analysis: stat, checksums (md5/sha1/sha256/sha512/b2), lsattr, getfattr, getfacl, lsof, package ownership, hex header/tail, printable strings, exiftool metadata, binwalk signatures, and a byte-entropy estimate. |
 | `audio_convert_functions.sh` | `2mp3`, `2flac`, `2ogg` | Converts audio to MP3, FLAC, or OGG via `ffmpeg`. Given a file, converts in place next to it. Given a directory, batch-converts every recognized audio file directly inside it (not recursive) into a `converted/` subfolder, skipping files already in the target format and never overwriting existing output. `-v` switches MP3/OGG to their highest-quality VBR mode instead of the fixed-bitrate default (ignored for FLAC, which is always lossless). |
 | `ripcd.sh` | `ripcd` | Interactive terminal CD ripper. Fetches metadata, coverart, writes replaygain tags on FLAC. |
-| `system_update.sh` | `system_update` | Checks for package manager and secondary managers (pacman, flatpak, snap) and runs their full update commands. |
+| `system_update.sh` | `system_update` | Detects whichever native package manager is present (apt, dnf, yum, zypper, pacman plus AUR via yay/paru, apk, xbps, emerge, or nix) and runs its full upgrade + cleanup cycle, then updates Flatpak and Snap if installed. Must be run as root. `-l`/`--log` also appends output to `/var/log/system-update.log`. |
 | `funchelp.sh` | `funchelp` | Prints a summary of the aliases and functions in this set. |
 
 
@@ -58,6 +64,7 @@ symlinked per the Installation steps below.
 
 | File | Command | What it does |
 |---|---|---|
+| `decode.sh` | `decode` | Takes one string and prints every plausible decoding of it: base64 (standard and URL-safe), base32, base85/Z85, hexadecimal, octal, decimal, binary, URL/percent, ROT13, ROT47, Atbash, HTML entities (named and numeric), and all 25 Caesar shifts. Invalid decodings for a given scheme are simply left blank. Usage: `decode '<string>'`. |
 | `file_encrypt.sh` | `file_encrypt` | Encrypts a file with GPG symmetric AES-256 (`file_encrypt FILE`), or decrypts with `-D` (`file_encrypt -D FILE.gpg`). Prompts before deleting the source file/archive after a successful run. |
 | `folder_encrypt.sh` | `folder_encrypt` | Tars and GPG-encrypts a folder (`folder_encrypt FOLDER`), or reverses that with `-D`. `-R` switches to bulk mode: every subdirectory of the target is archived/encrypted (or every `.gpg` inside it decrypted) individually, and on encrypt, loose files directly inside the target are moved into a `loose_files/` subfolder first so they aren't left behind. Prompts before deleting sources after each successful operation. |
 | `pw-manager.sh` | `pw-manager` | Terminal password manager. Vaults are GPG-encrypted tar archives (`.gpg` for single-password, `.gpg2` for a two-layer/two-password scheme), decrypted to a `/dev/shm` tmpfs while in use. Menu-driven: create/open vaults, browse/search/add/edit entries in a TUI, import/export CSV compatible with Bitwarden and KeePassXC, set a default vault directory and backup retention. Per-vault file locking prevents opening the same vault twice at once, and each write keeps rolling backups (pruned after the configured retention period). |
@@ -201,18 +208,25 @@ are read independently.
 in addition to printing it. `funcupdate -l` / `--log` appends to the same log
 file, prefixed with its own start timestamp, before it does anything else.
 
-## Notes
+## Included shell config (`bashrc` / `zshrc`)
 
-- `shredfile` and `shredfolder` both warn, and require interactive
-  confirmation, that `shred` does not reliably erase data on SSDs. Wear
-  leveling means the physical cells written to aren't guaranteed to be the
-  ones overwritten.
-- `scrmgr` intentionally isn't named `screen`, so it won't shadow the real
-  `screen` binary.
-- Only `audio_convert_functions.sh` currently uses the `# COMMANDS:` header
-  to expose more than one name from a single file; every other function
-  file symlinks under its own filename.
-- `ufw_tui` and `funcupdate` both require root (run with `sudo`); `pw-manager`
-- `file_encrypt`/`folder_encrypt` and `pw-manager`'s vault encryption all use
-  GPG symmetric AES-256, but they're independent tools with separate on-disk
-  formats; a vault made by one isn't compatible with the other.
+The repo ships a `bashrc` and a `zshrc` as optional, self-contained starting
+configs (amber prompt theme, history settings, completion, git-aware prompt).
+They are not required to use the functions and are not installed or symlinked
+by any of the steps above (those only touch `*.sh` files). If you want them,
+copy the relevant one into place yourself, e.g. `cp bashrc ~/.bashrc` or
+`cp zshrc ~/.zshrc`, and re-add anything you already had.
+
+Both define three aliases that the `funchelp` output refers to:
+
+- `ls` -> `ls --color=auto -Flartchs`
+- `grep` -> `grep --color=auto -i -n -I` (always case-insensitive)
+- `cp` -> `rsync -vpartlXEHhP --ignore-existing`
+
+Note the `cp` alias in particular: it is not a drop-in replacement for `cp`.
+`rsync --ignore-existing` will silently skip files that already exist at the
+destination instead of overwriting them, and rsync's trailing-slash rules for
+directories differ from `cp`'s. It only affects interactive use (aliases are
+not expanded in scripts), but it can surprise you. Remove or rename it if you
+would rather keep the real `cp`. The same case-insensitivity caveat applies to
+the `grep` alias.
