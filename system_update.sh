@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# system-update.sh
+# system_update.sh
 # Generic Linux system updater.
 # Detects and runs updates for whichever package managers are present on the
 # system, plus Flatpak and Snap if installed.
-# Usage: ./system-update.sh [-l | --log]
+# Usage: system_update [-l | --log]   (as root)
 # =============================================================================
 
 set -euo pipefail

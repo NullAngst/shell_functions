@@ -1,68 +1,79 @@
 #!/usr/bin/env bash
+#
+# funcupdate - re-pull NullAngst/shell_functions and redeploy it system-wide.
+#
+# Layout (the README's system-wide install):
+#   /usr/local/lib/shell-functions/*.sh   the scripts
+#   /usr/local/bin/<name>                 one symlink per command
+#
+# Usage: sudo funcupdate [-l | --log]
+#   -l, --log   also append output to /var/log/system-update.log
+#
+# Everything lives inside main(), which bash parses in full before running.
+# That matters because this script replaces its own file on disk mid-run.
 
-# Check for the logging flag
-if [[ "$1" == "-l" || "$1" == "--log" ]]; then
-    # Ensure we have permissions to write to the log before redirecting
-    touch /var/log/system-update.log 2>/dev/null || { echo "Cannot write to /var/log/system-update.log. Run with sudo."; exit 1; }
-    
-    # Redirect all stdout and stderr to tee, appending to the log
-    exec > >(tee -a /var/log/system-update.log) 2>&1
-    echo "==== Update started at $(date) ===="
-fi
+REPO_URL="https://github.com/NullAngst/shell_functions.git"
+LIB_DIR="/usr/local/lib/shell-functions"
+BIN_DIR="/usr/local/bin"
+LOG_FILE="/var/log/system-update.log"
 
-# System-wide installation requires root privileges
-if [[ $EUID -ne 0 ]]; then
-   echo "This script modifies /usr/local/ directories. Run it with sudo."
-   exit 1
-fi
+main() {
+    if [[ "$1" == "-l" || "$1" == "--log" ]]; then
+        touch "$LOG_FILE" 2>/dev/null || { echo "Cannot write to $LOG_FILE. Run with sudo."; exit 1; }
+        exec > >(tee -a "$LOG_FILE") 2>&1
+        echo "==== funcupdate started at $(date) ===="
+    elif [[ -n "$1" ]]; then
+        echo "Usage: sudo funcupdate [-l | --log]"
+        exit 1
+    fi
 
-# Detect the actual user's shell, bypassing the root shell invoked by sudo
-if [ -n "$SUDO_USER" ]; then
-    USER_SHELL=$(getent passwd "$SUDO_USER" | cut -d: -f7)
-else
-    USER_SHELL=$SHELL
-fi
-DETECTED_SHELL=$(basename "$USER_SHELL")
+    if [[ $EUID -ne 0 ]]; then
+        echo "This script writes to $LIB_DIR and $BIN_DIR. Run it with sudo."
+        exit 1
+    fi
 
-echo "Detected primary shell: $DETECTED_SHELL"
+    if ! command -v git >/dev/null 2>&1; then
+        echo "Error: git is not installed."
+        exit 1
+    fi
 
-# Create a temporary directory for pulling the repo and ensure it gets deleted on exit
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT
+    local tmp
+    tmp=$(mktemp -d) || exit 1
+    trap 'rm -rf "$tmp"' EXIT
 
-echo "Pulling latest scripts from GitHub..."
-if ! git clone -q https://github.com/NullAngst/shell_functions.git "$TEMP_DIR"; then
-    echo "Error: Failed to clone repository."
-    exit 1
-fi
+    echo "Pulling latest scripts from GitHub..."
+    if ! git clone -q --depth 1 "$REPO_URL" "$tmp"; then
+        echo "Error: failed to clone $REPO_URL"
+        exit 1
+    fi
 
-echo "Deploying files for all users..."
+    # Clear out the previous deployment first, so a script that was renamed
+    # or removed upstream doesn't leave a stale file or dead command behind.
+    # Only symlinks that point into LIB_DIR are touched.
+    echo "Removing previous deployment..."
+    mkdir -p "$LIB_DIR"
+    find "$BIN_DIR" -maxdepth 1 -type l -lname "$LIB_DIR/*" -delete
+    rm -f "$LIB_DIR"/*.sh
 
-# Create target directory
-mkdir -p /usr/local/lib/shell-functions
+    echo "Deploying to $LIB_DIR..."
+    cp "$tmp"/*.sh "$LIB_DIR"/
+    chmod 755 "$LIB_DIR"/*.sh
 
-# Copy all .sh files to the shared library directory
-cp "$TEMP_DIR"/*.sh /usr/local/lib/shell-functions/
-
-# Make the copied scripts executable
-chmod +x /usr/local/lib/shell-functions/*.sh
-
-# Symlink each script into /usr/local/bin so they are on everyone's PATH.
-# Most files expose one command matching their own filename. A file that
-# exposes more than one (declared via a "# COMMANDS: name1 name2" header
-# line, e.g. audio_convert_functions.sh) gets a symlink for each name.
-for f in /usr/local/lib/shell-functions/*.sh; do
-    base=$(basename "$f" .sh)
-    commands=$(grep -m1 '^# COMMANDS:' "$f" | cut -d: -f2-)
-    if [[ -n "$commands" ]]; then
-        for name in $commands; do
-            ln -sf "$f" "/usr/local/bin/$name"
+    # Most files expose one command named after the file. A file that exposes
+    # several declares them in a "# COMMANDS: name1 name2" header line
+    # (e.g. audio_convert_functions.sh) and gets one symlink per name.
+    local f name names
+    for f in "$LIB_DIR"/*.sh; do
+        names=$(grep -m1 '^# COMMANDS:' "$f" | cut -d: -f2-)
+        [[ -z "$names" ]] && names=$(basename "$f" .sh)
+        for name in $names; do
+            ln -sf "$f" "$BIN_DIR/$name"
             echo "Symlinked: $name -> $f"
         done
-    else
-        ln -sf "$f" "/usr/local/bin/$base"
-        echo "Symlinked: $base -> $f"
-    fi
-done
+    done
 
-echo "Update complete. The latest functions are available system-wide."
+    echo "Update complete. The latest functions are available system-wide."
+}
+
+main "$@"
+exit

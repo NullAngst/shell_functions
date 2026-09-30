@@ -26,8 +26,13 @@ alias cp='rsync -vpartlXEHhP --ignore-existing'
 alias grep='grep --color=auto -i -n -I'
 
 # ------------------------------------------------------------------------------
-# --- Custom Functions (vmv vcp unpack scrmgr moveav ffile cleandir
-#     shredfile shredfolder funchelp)
+# --- Custom Functions and Scripts
+#
+# The commands from NullAngst/shell_functions (vmv, vcp, unpack, 2mp3, ...,
+# run funchelp for the full list) are not defined here. They are separate
+# scripts symlinked onto PATH. A single-user install puts those symlinks in
+# ~/.local/bin, which the line below adds to PATH. A system-wide install uses
+# /usr/local/bin, which is already on PATH. See README.md.
 # ------------------------------------------------------------------------------
 
 export PATH="$HOME/.local/bin:$PATH"
