@@ -10,14 +10,16 @@
 # Run with no arguments for the interactive settings screen. For unattended
 # runs (cron, systemd) pass flags or a saved profile plus --yes. See --help.
 
+# Strict mode and exit would leak into the calling shell, so refuse to be sourced.
+(return 0 2>/dev/null) && { printf 'media_transcode: run this as a command, do not source it\n' >&2; return 1; }
 
-set -uo pipefail
+set -euo pipefail
 
-readonly VERSION="8"
+readonly VERSION="9"
 readonly PROG=${0##*/}
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
-    echo "$PROG: bash 4.4 or newer is required." >&2
+    printf '%s\n' "$PROG: bash 4.4 or newer is required." >&2
     exit 1
 fi
 
@@ -144,9 +146,9 @@ secs_to_us() {
     if [[ $v =~ ^([0-9]+)(\.([0-9]+))?$ ]]; then
         int=${BASH_REMATCH[1]}
         frac="${BASH_REMATCH[3]}000000"; frac=${frac:0:6}
-        echo $(( 10#$int * 1000000 + 10#$frac ))
+        printf '%s\n' "$(( 10#$int * 1000000 + 10#$frac ))"
     else
-        echo 0
+        printf '%s\n' 0
     fi
 }
 
@@ -170,18 +172,54 @@ glob_escape() {
 
 path_key() { printf '%s' "$1" | md5sum | cut -c1-16; }
 
-free_bytes() { df -B1 --output=avail -- "$1" 2>/dev/null | tail -n1 | tr -d ' '; }
+# Free bytes on the filesystem holding $1. df -P is the POSIX one-line-per-
+# filesystem format; %.0f keeps awk from switching to exponent notation.
+free_bytes() {
+    df -Pk -- "$1" 2>/dev/null | awk 'NR == 2 { printf "%.0f", $4 * 1024 }' || true
+}
 
-same_fs() { [[ "$(stat -c %d -- "$1" 2>/dev/null)" == "$(stat -c %d -- "$2" 2>/dev/null)" ]]; }
+# Mount point holding $1, from df -P (fields 6 onward, so spaces survive)
+mount_of() {
+    df -P -- "$1" 2>/dev/null \
+        | awk 'NR == 2 { m = $6; for (i = 7; i <= NF; i++) m = m " " $i; print m }' || true
+}
+
+# True when a rename between the two paths works without copying, which needs
+# the same mount, not just the same filesystem
+same_fs() {
+    local a b
+    a=$(mount_of "$1"); b=$(mount_of "$2")
+    [[ -n $a && $a == "$b" ]]
+}
+
+# Size in bytes. GNU wc answers -c on a regular file from its metadata
+# instead of reading it.
+file_size() {
+    local n
+    n=$(wc -c < "$1" 2>/dev/null) || return 1
+    printf '%s' "${n//[[:space:]]/}"
+}
+
+# Absolute path with symlinks resolved when it exists, else just made
+# absolute. Stands in for GNU realpath -m.
+canon_path() {
+    local p=$1
+    [[ $p == /* ]] || p="$PWD/$p"
+    if [[ -d $p ]]; then
+        (cd -P -- "$p" && pwd -P)
+    else
+        printf '%s' "$p"
+    fi
+}
 
 enc_name() {
     case ${1:-$ENCODER} in
-        cpu) echo libx265 ;; nvidia) echo hevc_nvenc ;; vaapi) echo hevc_vaapi ;; *) echo unknown ;;
+        cpu) printf '%s\n' libx265 ;; nvidia) printf '%s\n' hevc_nvenc ;; vaapi) printf '%s\n' hevc_vaapi ;; *) printf '%s\n' unknown ;;
     esac
 }
 
 quality_label() {
-    case $ENCODER in cpu) echo CRF ;; nvidia) echo CQ ;; vaapi) echo QP ;; *) echo Q ;; esac
+    case $ENCODER in cpu) printf '%s\n' CRF ;; nvidia) printf '%s\n' CQ ;; vaapi) printf '%s\n' QP ;; *) printf '%s\n' Q ;; esac
 }
 
 # ===========================================================================
@@ -353,7 +391,7 @@ parse_args() {
             -n|--dry-run)      DRY_RUN=1 ;;
             -y|--yes)          ASSUME_YES=1 ;;
             -h|--help)         usage; exit 0 ;;
-            -V|--version)      echo "$PROG version $VERSION"; exit 0 ;;
+            -V|--version)      printf '%s\n' "$PROG version $VERSION"; exit 0 ;;
             *)                 die "Unknown argument: $1 (see --help)" ;;
         esac
         shift
@@ -384,7 +422,7 @@ detect_ffmpeg() {
     command -v ffprobe >/dev/null 2>&1 || die "ffprobe not found in PATH."
     FF_ENCODERS=$(ffmpeg -hide_banner -encoders 2>/dev/null)
     FF_FILTERS=$(ffmpeg -hide_banner -filters 2>/dev/null)
-    command -v flock >/dev/null 2>&1 && HAVE_FLOCK=1
+    if command -v flock >/dev/null 2>&1; then HAVE_FLOCK=1; fi
 }
 
 have_encoder() { awk -v n="$1" '$2 == n { f = 1 } END { exit !f }' <<< "$FF_ENCODERS"; }
@@ -392,14 +430,17 @@ have_filter()  { awk -v n="$1" '$2 == n { f = 1 } END { exit !f }' <<< "$FF_FILT
 
 render_nodes() {
     local n
-    for n in /dev/dri/renderD*; do [[ -e $n ]] && printf '%s\n' "$n"; done
+    for n in /dev/dri/renderD*; do
+        if [[ -e $n ]]; then printf '%s\n' "$n"; fi
+    done
+    return 0
 }
 
 render_vendor() {
     local v
-    v=$(cat "/sys/class/drm/${1##*/}/device/vendor" 2>/dev/null)
+    v=$(cat "/sys/class/drm/${1##*/}/device/vendor" 2>/dev/null || true)
     case $v in
-        0x8086) echo Intel ;; 0x1002) echo AMD ;; 0x10de) echo NVIDIA ;; *) echo "${v:-unknown vendor}" ;;
+        0x8086) printf '%s\n' Intel ;; 0x1002) printf '%s\n' AMD ;; 0x10de) printf '%s\n' NVIDIA ;; *) printf '%s\n' "${v:-unknown vendor}" ;;
     esac
 }
 
@@ -407,13 +448,13 @@ nvidia_present() { [[ -e /dev/nvidia0 ]] || command -v nvidia-smi >/dev/null 2>&
 
 encoder_status() {
     case $1 in
-        cpu)    have_encoder libx265 && echo "available" || echo "not in this ffmpeg build" ;;
-        nvidia) if ! have_encoder hevc_nvenc; then echo "not in this ffmpeg build"
-                elif nvidia_present; then echo "available"
-                else echo "in ffmpeg, but no NVIDIA device found"; fi ;;
-        vaapi)  if ! have_encoder hevc_vaapi; then echo "not in this ffmpeg build"
-                elif [[ -n $(render_nodes) ]]; then echo "available"
-                else echo "in ffmpeg, but no /dev/dri render node found"; fi ;;
+        cpu)    have_encoder libx265 && printf '%s\n' "available" || printf '%s\n' "not in this ffmpeg build" ;;
+        nvidia) if ! have_encoder hevc_nvenc; then printf '%s\n' "not in this ffmpeg build"
+                elif nvidia_present; then printf '%s\n' "available"
+                else printf '%s\n' "in ffmpeg, but no NVIDIA device found"; fi ;;
+        vaapi)  if ! have_encoder hevc_vaapi; then printf '%s\n' "not in this ffmpeg build"
+                elif [[ -n $(render_nodes) ]]; then printf '%s\n' "available"
+                else printf '%s\n' "in ffmpeg, but no /dev/dri render node found"; fi ;;
     esac
 }
 
@@ -424,7 +465,7 @@ canon_dir_var() {
     local var=$1 v=${!1}
     [[ -z $v ]] && return 0
     v=$(expand_path "$v")
-    v=$(realpath -m -- "$v")
+    v=$(canon_path "$v")
     printf -v "$var" '%s' "$v"
 }
 
@@ -439,7 +480,7 @@ normalize_settings() {
     local d
     for d in SCAN_DIR ARCHIVE_DIR OUTPUT_DIR SCRATCH_DIR WIP_DIR; do canon_dir_var "$d"; done
     # An output dir equal to the scan dir is the same as "next to the source"
-    [[ -n $OUTPUT_DIR && $OUTPUT_DIR == "$SCAN_DIR" ]] && OUTPUT_DIR=""
+    if [[ -n $OUTPUT_DIR && $OUTPUT_DIR == "$SCAN_DIR" ]]; then OUTPUT_DIR=""; fi
 }
 
 VALIDATION_ERRORS=()
@@ -538,10 +579,10 @@ prompt_choice() {
     local label=$1 cur=$2 v o
     shift 2
     while true; do
-        read -e -r -p "  $label [$(IFS=/; echo "$*")]: " -i "$cur" v || return 1
+        read -e -r -p "  $label [$(IFS=/; printf '%s' "$*")]: " -i "$cur" v || return 1
         v=${v,,}
         for o in "$@"; do [[ $v == "$o" ]] && { REPLY_VAL=$v; return 0; }; done
-        echo "  Please enter one of: $*"
+        printf '%s\n' "  Please enter one of: $*"
     done
 }
 
@@ -551,7 +592,7 @@ prompt_int() {
         read -e -r -p "  $label: " -i "$cur" v || return 1
         v=${v%[pP%]}
         if is_int_range "$v" "$lo" "$hi"; then REPLY_VAL=$((10#$v)); return 0; fi
-        echo "  Please enter a whole number from $lo to $hi."
+        printf '%s\n' "  Please enter a whole number from $lo to $hi."
     done
 }
 
@@ -562,16 +603,16 @@ prompt_dir() {
         v=$(expand_path "$v")
         if [[ -z $v ]]; then
             if (( allow_empty )); then REPLY_VAL=""; return 0; fi
-            echo "  A directory is required."; continue
+            printf '%s\n' "  A directory is required."; continue
         fi
         if [[ ! -d $v ]]; then
             if ask_yes_no "  '$v' does not exist. Create it?" N; then
-                mkdir -p -- "$v" || { echo "  Could not create it."; continue; }
+                mkdir -p -- "$v" || { printf '%s\n' "  Could not create it."; continue; }
             else
                 continue
             fi
         fi
-        REPLY_VAL=$(realpath -- "$v")
+        REPLY_VAL=$(cd -P -- "$v" && pwd -P)
         return 0
     done
 }
@@ -623,7 +664,7 @@ draw_menu() {
     menu_item 2  "Minimum size"    "$MIN_SIZE_GB GiB"
     menu_item 3  "Encoder"         "$(desc_encoder)"
     menu_item 4  "Quality"         "$(quality_label) $QUALITY  ${C_DIM}(lower = better quality, bigger file)${C_RST}"
-    menu_item 5  "Max height"      "$( (( 10#$MAX_HEIGHT == 0 )) 2>/dev/null && echo 'keep source resolution' || echo "${MAX_HEIGHT}p (smaller sources are not upscaled)")"
+    menu_item 5  "Max height"      "$( (( 10#$MAX_HEIGHT == 0 )) 2>/dev/null && printf '%s\n' 'keep source resolution' || printf '%s\n' "${MAX_HEIGHT}p (smaller sources are not upscaled)")"
     menu_item 6  "Bit depth"       "${BIT_DEPTH}-bit"
     menu_item 7  "Audio"           "$(desc_audio)"
     menu_item 8  "Originals"       "$(desc_originals)"
@@ -631,7 +672,7 @@ draw_menu() {
     menu_item 10 "Scratch dir"     "$(opt_or_none "$SCRATCH_DIR")"
     menu_item 11 "WIP dir"         "$(opt_or_none "$WIP_DIR")"
     menu_item 12 "Skip codecs"     "$(opt_or_none "$SKIP_CODECS")"
-    menu_item 13 "Size guard"      "$( (( 10#$MAX_OUTPUT_PCT > 0 )) 2>/dev/null && echo "abort if output reaches ${MAX_OUTPUT_PCT}% of source" || echo off)"
+    menu_item 13 "Size guard"      "$( (( 10#$MAX_OUTPUT_PCT > 0 )) 2>/dev/null && printf '%s\n' "abort if output reaches ${MAX_OUTPUT_PCT}% of source" || printf '%s\n' off)"
     menu_item 14 "Order"           "$ORDER"
     menu_item 15 "Advanced"        "x265 params, presets, hw decode ($HW_DECODE), nice ($NICE), extensions"
     rule
@@ -644,9 +685,9 @@ menu_item() { printf '  %s%2d%s  %-15s %s\n' "$C_CYN" "$1" "$C_RST" "$2" "$3"; }
 
 edit_encoder() {
     local e nodes=() n i
-    echo
+    printf '\n'
     for e in cpu nvidia vaapi; do printf '    %-7s %-11s %s\n' "$e" "$(enc_name "$e")" "$(encoder_status "$e")"; done
-    prompt_choice "Encoder" "$ENCODER" cpu nvidia vaapi || return
+    prompt_choice "Encoder" "$ENCODER" cpu nvidia vaapi || return 0
     ENCODER=$REPLY_VAL
     if [[ $ENCODER == vaapi ]]; then
         mapfile -t nodes < <(render_nodes)
@@ -661,22 +702,23 @@ edit_encoder() {
 }
 
 edit_advanced() {
-    echo
+    printf '\n'
     prompt_choice "x265 preset" "$X265_PRESET" ultrafast superfast veryfast faster fast medium slow slower veryslow placebo && X265_PRESET=$REPLY_VAL
     prompt_text "x265 params (empty = x265 defaults)" "$X265_PARAMS" && X265_PARAMS=$REPLY_VAL
     prompt_choice "NVENC preset" "$NVENC_PRESET" p1 p2 p3 p4 p5 p6 p7 && NVENC_PRESET=$REPLY_VAL
     prompt_choice "GPU decode for hw encoders" "$HW_DECODE" auto off && HW_DECODE=$REPLY_VAL
     prompt_int "Nice level for ffmpeg (0 = normal priority)" "$NICE" 0 19 && NICE=$REPLY_VAL
     prompt_text "File extensions to scan" "$EXTENSIONS" && EXTENSIONS=$REPLY_VAL
+    return 0
 }
 
 edit_item() {
-    echo
+    printf '\n'
     case $1 in
         1)  prompt_dir "Directory to scan" "$SCAN_DIR" && SCAN_DIR=$REPLY_VAL ;;
         2)  while prompt_text "Only process files larger than (GiB, decimals ok, 0 = all)" "$MIN_SIZE_GB"; do
                 [[ $REPLY_VAL =~ ^[0-9]+(\.[0-9]+)?$ ]] && { MIN_SIZE_GB=$REPLY_VAL; break; }
-                echo "  Please enter a number like 20 or 1.5."
+                printf '%s\n' "  Please enter a number like 20 or 1.5."
             done ;;
         3)  edit_encoder ;;
         4)  prompt_int "$(quality_label) value, 0-51 (lower = better quality, bigger file)" "$QUALITY" 0 51 && QUALITY=$REPLY_VAL ;;
@@ -684,7 +726,7 @@ edit_item() {
         6)  prompt_choice "Output bit depth" "$BIT_DEPTH" 8 10 && BIT_DEPTH=$REPLY_VAL ;;
         7)  prompt_choice "Audio: copy all, or compress lossless tracks" "$AUDIO" copy compress && AUDIO=$REPLY_VAL
             if [[ $AUDIO == compress ]]; then
-                echo "    eac3: widest device support (max 5.1, 7.1 is downmixed)   aac: universal   opus: smallest"
+                printf '%s\n' "    eac3: widest device support (max 5.1, 7.1 is downmixed)   aac: universal   opus: smallest"
                 prompt_choice "Codec for lossless tracks" "$AUDIO_CODEC" eac3 aac opus && AUDIO_CODEC=$REPLY_VAL
             fi ;;
         8)  prompt_choice "After success, originals are" "$ORIGINALS" move delete keep && ORIGINALS=$REPLY_VAL
@@ -693,27 +735,29 @@ edit_item() {
             [[ $OUTPUT_DIR == "$SCAN_DIR" ]] && OUTPUT_DIR=""
             while prompt_text "Output name suffix (may be empty)" "$OUTPUT_SUFFIX"; do
                 [[ $REPLY_VAL =~ ^[A-Za-z0-9._\ -]*$ ]] && { OUTPUT_SUFFIX=$REPLY_VAL; break; }
-                echo "  Letters, digits, space, '.', '_' and '-' only."
+                printf '%s\n' "  Letters, digits, space, '.', '_' and '-' only."
             done ;;
         10) prompt_dir "Scratch directory (empty = encode in place)" "$SCRATCH_DIR" 1 && SCRATCH_DIR=$REPLY_VAL ;;
         11) prompt_dir "WIP directory (empty = none; locks already stop instances colliding)" "$WIP_DIR" 1 && WIP_DIR=$REPLY_VAL ;;
         12) while prompt_text "Skip sources already in these codecs, comma separated (e.g. hevc,av1)" "$SKIP_CODECS"; do
                 REPLY_VAL=${REPLY_VAL,,}; REPLY_VAL=${REPLY_VAL// /}
                 [[ $REPLY_VAL =~ ^[a-z0-9_,]*$ ]] && { SKIP_CODECS=$REPLY_VAL; break; }
-                echo "  Use a comma-separated list like hevc,av1."
+                printf '%s\n' "  Use a comma-separated list like hevc,av1."
             done ;;
         13) prompt_int "Abort and keep the original if output reaches this % of source (0 = off)" "$MAX_OUTPUT_PCT" 0 100 && MAX_OUTPUT_PCT=$REPLY_VAL ;;
         14) prompt_choice "Processing order" "$ORDER" path largest smallest && ORDER=$REPLY_VAL ;;
         15) edit_advanced ;;
         *)  MENU_MSG="No item $1." ;;
     esac
+    # A prompt cut short by Ctrl+D just leaves the setting as it was
+    return 0
 }
 
 run_menu() {
     local choice name file e
     while true; do
         draw_menu
-        read -r -p "> " choice || { echo; exit 0; }
+        read -r -p "> " choice || { printf '\n'; exit 0; }
         case ${choice,,} in
             "")
                 if validate_settings; then
@@ -801,9 +845,9 @@ video_pipeline() {
 
 attempt_label() {
     case $1 in
-        cpu) echo "libx265 on CPU" ;;
-        gpu) echo "$(enc_name), GPU decode" ;;
-        sw)  echo "$(enc_name), CPU decode" ;;
+        cpu) printf '%s\n' "libx265 on CPU" ;;
+        gpu) printf '%s\n' "$(enc_name), GPU decode" ;;
+        sw)  printf '%s\n' "$(enc_name), CPU decode" ;;
     esac
 }
 
@@ -934,12 +978,12 @@ build_stream_args() {
 
     local parts=()
     (( a_copy )) && parts+=("$a_copy copied")
-    (( a_enc ))  && parts+=("$a_enc re-encoded to ${AUDIO_CODEC^^} ($(IFS=,; echo "${enc_from[*]}"))")
+    (( a_enc ))  && parts+=("$a_enc re-encoded to ${AUDIO_CODEC^^} ($(IFS=,; printf '%s' "${enc_from[*]}"))")
     PLAN_AUDIO=$(join_parts "${parts[@]}")
     parts=()
     (( s_copy )) && parts+=("$s_copy copied")
     (( s_conv )) && parts+=("$s_conv converted to SRT")
-    (( ${#dropped[@]} )) && parts+=("${#dropped[@]} dropped ($(IFS=,; echo "${dropped[*]}"): not supported in MKV)")
+    (( ${#dropped[@]} )) && parts+=("${#dropped[@]} dropped ($(IFS=,; printf '%s' "${dropped[*]}"): not supported in MKV)")
     (( att ))    && parts+=("$att attachment(s)/fonts kept")
     PLAN_SUBS=$(join_parts "${parts[@]}")
     return 0
@@ -1023,7 +1067,9 @@ acquire_lock() {
         if ! flock -n "$LOCK_FD"; then
             exec {LOCK_FD}>&-; LOCK_FD=""; return 1
         fi
-        if [[ "$(stat -L -c %i "/dev/fd/$LOCK_FD" 2>/dev/null)" == "$(stat -c %i -- "$f" 2>/dev/null)" ]]; then
+        # bash's -ef compares device and inode, and for /dev/fd/N it looks
+        # at the open descriptor itself
+        if [[ /dev/fd/$LOCK_FD -ef $f ]]; then
             LOCK_FILE=$f; return 0
         fi
         exec {LOCK_FD}>&-; LOCK_FD=""
@@ -1047,7 +1093,7 @@ return_claim() {
     elif [[ -e $CLAIM_SRC ]]; then
         warn "Could not return $CLAIM_WIP: $CLAIM_SRC exists. Left in the WIP dir."
     else
-        mv -n -- "$CLAIM_WIP" "$CLAIM_SRC" 2>/dev/null
+        mv -n -- "$CLAIM_WIP" "$CLAIM_SRC" 2>/dev/null || true
         if [[ -e $CLAIM_WIP ]]; then warn "Could not return $CLAIM_WIP to $CLAIM_SRC."
         else info "  Returned source from WIP dir."; fi
     fi
@@ -1100,7 +1146,10 @@ log_hdr() {
             printf '# These files are HDR / Dolby Vision and were skipped. Convert them manually (e.g. HandBrake).\n\n'
         } > "$HDR_LOG" 2>/dev/null || return 0
     fi
-    grep -qxF -- "$1" "$HDR_LOG" 2>/dev/null || printf '%s\n' "$1" >> "$HDR_LOG"
+    if ! grep -qxF -- "$1" "$HDR_LOG" 2>/dev/null; then
+        printf '%s\n' "$1" >> "$HDR_LOG" 2>/dev/null || true
+    fi
+    return 0
 }
 
 verify_output() {
@@ -1144,8 +1193,9 @@ process_file() {
     CUR_REL=$rel
     printf '\n%s[%d/%d]%s %s  %s%s%s\n' "$C_BLD" "$n" "$TOTAL" "$C_RST" "$rel" "$C_DIM" "$(fmt_size "$size")" "$C_RST"
     if (( ! DRY_RUN )); then
-        acquire_lock "$(path_key "$rel")"
-        case $? in
+        local lock_rc=0
+        acquire_lock "$(path_key "$rel")" || lock_rc=$?
+        case $lock_rc in
             1) mark skip "being processed by another instance"; return ;;
             2) warn "Could not create a lock file in $LOCK_DIR; continuing without a lock." ;;
         esac
@@ -1159,7 +1209,7 @@ process_one() {
     local src=$1 size=$2 rel=$3
 
     [[ -f $src ]] || { mark skip "no longer exists (moved by another instance?)"; return; }
-    size=$(stat -c %s -- "$src" 2>/dev/null || echo "$size")
+    size=$(file_size "$src" || printf '%s' "$size")
 
     if [[ -f $NOGAIN_LIST ]] && grep -qxF -- "$size"$'\t'"$rel" "$NOGAIN_LIST"; then
         mark skip "did not shrink enough on an earlier run (see $NOGAIN_LIST)"; return
@@ -1266,7 +1316,7 @@ process_one() {
     fi
 
     # --- Encode ---
-    mkdir -p -- "$FFLOG_DIR" 2>/dev/null
+    mkdir -p -- "$FFLOG_DIR" 2>/dev/null || true
     local ff_log
     ff_log="$FFLOG_DIR/$(date +%Y%m%d-%H%M%S)_${key}_${stem:0:60}.log"
     local fs_args=()
@@ -1297,12 +1347,17 @@ process_one() {
         (( n_att > 1 )) && info "  GPU decode failed; retrying with CPU decode."
         info "  Encoding with $(attempt_label "$attempt")"
         { printf '### attempt %d (%s)\n### ' "$n_att" "$attempt"; printf '%q ' "${cmd[@]}"; printf '\n'; } >> "$ff_log"
-        "${cmd[@]}" 2>>"$ff_log" | progress_meter "$PR_DUR_US"
-        rc=${PIPESTATUS[0]}
+        # rc is ffmpeg's own exit status, not the progress reader's
+        if "${cmd[@]}" 2>>"$ff_log" | progress_meter "$PR_DUR_US"; then
+            rc=0
+        else
+            rc=${PIPESTATUS[0]}
+        fi
         # ffmpeg catches Ctrl+C / SIGTERM and exits normally with 255. Bash then
         # assumes the child dealt with the signal and does not run our trap,
-        # so treat that exit as an interrupt ourselves.
-        if (( rc == 255 )) && tail -n 20 "$ff_log" 2>/dev/null | grep -qi 'received signal'; then
+        # so treat that exit as an interrupt ourselves. grep reads a process
+        # substitution so an early exit can't trip pipefail on tail.
+        if (( rc == 255 )) && grep -qi 'received signal' < <(tail -n 20 "$ff_log" 2>/dev/null || true); then
             on_interrupt
         fi
         (( rc == 0 )) && break
@@ -1313,13 +1368,13 @@ process_one() {
     if (( rc != 0 )); then
         rm -f -- "${CUR_PARTS[@]}"; CUR_PARTS=()
         return_claim
-        printf '%s' "$C_DIM"; tail -n 4 "$ff_log" 2>/dev/null | sed 's/^/    /'; printf '%s' "$C_RST"
+        printf '%s' "$C_DIM"; { tail -n 4 "$ff_log" 2>/dev/null || true; } | sed 's/^/    /'; printf '%s' "$C_RST"
         mark fail "ffmpeg exited with $rc after $(fmt_hms "$elapsed"). Log: $ff_log"
         return
     fi
 
     local out_size
-    out_size=$(stat -c %s -- "$encode_path" 2>/dev/null || echo 0)
+    out_size=$(file_size "$encode_path" || printf '0')
     if (( limit > 0 && out_size >= limit )); then
         rm -f -- "${CUR_PARTS[@]}"; CUR_PARTS=()
         return_claim
@@ -1419,31 +1474,53 @@ prepare_run() {
 }
 
 scan_files() {
-    local d ext prune=() names=() sz path sort_args=()
+    local d ext prune=() names=() path i key
+    local -a order=() sorted_files=() sorted_sizes=()
     for d in "$ARCHIVE_DIR" "$WIP_DIR" "$SCRATCH_DIR" "$OUTPUT_DIR"; do
-        [[ -n $d && $d == "$SCAN_DIR"/* ]] && prune+=(-o -path "$(glob_escape "$d")")
+        if [[ -n $d && $d == "$SCAN_DIR"/* ]]; then prune+=(-o -path "$(glob_escape "$d")"); fi
     done
+    # Unquoted on purpose: EXTENSIONS is a space-separated list
     for ext in $EXTENSIONS; do
-        (( ${#names[@]} )) && names+=(-o)
+        if (( ${#names[@]} )); then names+=(-o); fi
         names+=(-iname "*.$ext")
     done
     local not_ours=()
-    [[ -n $OUTPUT_SUFFIX ]] && not_ours=(! -iname "*${OUTPUT_SUFFIX}.mkv")
-    # shellcheck disable=SC2054  # -k1,1n is a sort key, not an array separator
-    case $ORDER in
-        largest)  sort_args=(-z -t $'\t' -k1,1nr) ;;
-        smallest) sort_args=(-z -t $'\t' -k1,1n) ;;
-        *)        sort_args=(-z -t $'\t' -k2) ;;
-    esac
+    if [[ -n $OUTPUT_SUFFIX ]]; then not_ours=(! -iname "*${OUTPUT_SUFFIX}.mkv"); fi
 
     FILES=(); SIZES=()
-    while IFS=$'\t' read -r -d '' sz path; do
-        SIZES+=("$sz"); FILES+=("$path")
+    while IFS= read -r -d '' path; do
+        FILES+=("$path")
+        SIZES+=("$(file_size "$path" || printf '0')")
     done < <(find "$SCAN_DIR" -mindepth 1 \
                 \( -name '.*' "${prune[@]}" \) -prune -o \
                 -type f -size +"${MIN_BYTES}c" \( "${names[@]}" \) "${not_ours[@]}" \
-                -printf '%s\t%p\0' 2>/dev/null | sort "${sort_args[@]}")
+                -print0 2>/dev/null || true)
     TOTAL=${#FILES[@]}
+    (( TOTAL > 1 )) || return 0
+
+    # Sort index numbers, not the paths themselves, so a path with a tab or
+    # newline in it can't break the sort and no NUL-aware sort is needed.
+    while IFS=$'\t' read -r _ i; do
+        order+=("$i")
+    done < <(
+        for i in "${!FILES[@]}"; do
+            case $ORDER in
+                largest|smallest) key=${SIZES[i]} ;;
+                *) key=${FILES[i]//[$'\t\n']/ } ;;
+            esac
+            printf '%s\t%s\n' "$key" "$i"
+        done | case $ORDER in
+            largest)  sort -t "$(printf '\t')" -k1,1nr ;;
+            smallest) sort -t "$(printf '\t')" -k1,1n ;;
+            *)        sort -t "$(printf '\t')" -k1,1 ;;
+        esac
+    )
+    for i in "${order[@]}"; do
+        sorted_files+=("${FILES[i]}")
+        sorted_sizes+=("${SIZES[i]}")
+    done
+    FILES=("${sorted_files[@]}")
+    SIZES=("${sorted_sizes[@]}")
 }
 
 print_header() {
@@ -1453,7 +1530,7 @@ print_header() {
     printf '  Scan dir     : %s\n' "$SCAN_DIR"
     printf '  Candidates   : %d file(s) over %s GiB, %s total\n' "$TOTAL" "$MIN_SIZE_GB" "$(fmt_size "$total_bytes")"
     printf '  Encoder      : %s, %s %s, %s-bit, max height %s\n' "$(enc_name)" "$(quality_label)" "$QUALITY" "$BIT_DEPTH" \
-        "$( (( 10#$MAX_HEIGHT > 0 )) && echo "${MAX_HEIGHT}p" || echo source)"
+        "$( (( 10#$MAX_HEIGHT > 0 )) && printf '%s\n' "${MAX_HEIGHT}p" || printf '%s\n' source)"
     printf '  Originals    : %s\n' "$(desc_originals)"
     printf '  Output       : %s\n' "$(desc_output)"
     [[ -n $SCRATCH_DIR ]] && printf '  Scratch      : %s\n' "$SCRATCH_DIR"
@@ -1470,7 +1547,7 @@ print_header() {
 
 print_summary() {
     local elapsed=$(( SECONDS - RUN_T0 )) f
-    echo
+    printf '\n'
     rule
     printf '  Run finished after %s\n' "$(fmt_hms "$elapsed")"
     rule
@@ -1497,7 +1574,7 @@ print_summary() {
 # shellcheck disable=SC2329  # invoked via trap
 on_interrupt() {
     trap '' INT TERM
-    echo
+    printf '\n'
     warn "Interrupted."
     local p
     for p in "${CUR_PARTS[@]}"; do
@@ -1509,6 +1586,23 @@ on_interrupt() {
     [[ -n $CUR_REL ]] && log "interrupted during $CUR_REL"
     (( STARTED )) && print_summary
     exit 130
+}
+
+# Strict mode stops the script on an unexpected failure. When that happens
+# mid-file, clean up the same way Ctrl+C does so nothing is left half done.
+# shellcheck disable=SC2329  # invoked via trap
+on_exit() {
+    local rc=$? p
+    (( rc != 0 )) || return 0
+    if (( ${#CUR_PARTS[@]} )) || [[ -n $CLAIM_WIP ]]; then
+        warn "Stopped by an unexpected error (exit $rc) while working on $CUR_REL."
+        for p in "${CUR_PARTS[@]}"; do
+            if [[ -e $p ]]; then rm -f -- "$p"; info "Removed partial file: $p"; fi
+        done
+        CUR_PARTS=()
+        return_claim
+    fi
+    release_lock
 }
 
 # shellcheck disable=SC2329  # invoked via trap
@@ -1526,6 +1620,7 @@ main() {
 
     trap on_interrupt INT TERM
     trap on_usr1 USR1
+    trap on_exit EXIT
 
     parse_args "$@"
     resolve_config "$explicit_profile"
@@ -1542,7 +1637,7 @@ main() {
         if ! validate_settings; then
             local e
             for e in "${VALIDATION_ERRORS[@]}"; do err "$e"; done
-            echo "Run '$PROG --help' for options, or run it in a terminal without --yes for the settings screen." >&2
+            printf '%s\n' "Run '$PROG --help' for options, or run it in a terminal without --yes for the settings screen." >&2
             exit 1
         fi
     else
@@ -1574,7 +1669,4 @@ main() {
     exit 0
 }
 
-# Allow sourcing for testing without running
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-    main "$@"
-fi
+main "$@"

@@ -17,9 +17,19 @@
 # Exit status: 0 if every target succeeded, 1 otherwise, 2 on usage errors.
 #
 # External tools are only required for the formats actually encountered:
-# tar, gzip, bzip2, xz, zstd, unrar (or 7z), and 7z/7zz/7za.
-#
-# Tested under bash 5.2 and zsh 5.9.
+# tar, gzip, bzip2, xz, zstd, unrar (or 7z), and 7z/7zz/7za. find and tr are
+# always needed.
+
+# Strict mode and exit would leak into the calling shell, so refuse to be sourced.
+(return 0 2>/dev/null) && { printf 'unpack: run this as a command, do not source it\n' >&2; return 1; }
+
+set -euo pipefail
+
+# Set from the command line in main()
+_unpack_keep=0
+_unpack_dry=0
+_unpack_verbose=0
+_unpack_maxdepth=8
 
 _unpack_usage() {
     cat <<'EOF'
@@ -172,7 +182,7 @@ _unpack_delete_set() {
             *) continue ;;
         esac
         rm -f -- "$f"
-    done < <(find "$dir" -maxdepth 1 -type f -print0)
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -print0)
 }
 
 _unpack_missing() {
@@ -239,14 +249,26 @@ _unpack_extract() {
 _unpack_dir() {
     local dir="$1" depth="$2"
     local rc=0 f="" b="" bl=""
+    local -a found=()
 
+    # Collect the listing first. Unpacking writes new files into this same
+    # directory and deletes volumes from it, so reading find's output while
+    # that happens could hand back a file twice or one that's already gone.
     while IFS= read -r -d '' f; do
+        found+=("$f")
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -print0)
+
+    for f in "${found[@]}"; do
+        # Removed as a sibling volume, or already unpacked as a nested result
+        [ -f "$f" ] || continue
         b="${f##*/}"
         bl=$(_unpack_lower "$b")
         _unpack_kind "$bl" >/dev/null 2>&1 || continue
-        _unpack_is_continuation "$bl" && continue
+        if _unpack_is_continuation "$bl"; then
+            continue
+        fi
         _unpack_one "$f" "$depth" || rc=1
-    done < <(find "$dir" -maxdepth 1 -type f -print0)
+    done
 
     return "$rc"
 }
@@ -377,9 +399,17 @@ _unpack_one() {
     return 1
 }
 
-unpack() {
-    local _unpack_keep=0 _unpack_dry=0 _unpack_verbose=0 _unpack_maxdepth=8
-    local OPTIND=1 OPTARG="" opt="" rc=0 t=""
+main() {
+    local opt="" rc=0 t=""
+
+    local missing=() cmd
+    for cmd in find tr; do
+        _unpack_have "$cmd" || missing+=("$cmd")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        _unpack_warn "missing required commands: ${missing[*]}"
+        return 1
+    fi
 
     while getopts ':knvd:h' opt; do
         case "$opt" in
@@ -409,20 +439,4 @@ unpack() {
     return "$rc"
 }
 
-_unpack_sourced=0
-if [ -n "${ZSH_VERSION:-}" ]; then
-    case ${ZSH_EVAL_CONTEXT:-} in
-        *:file) _unpack_sourced=1 ;;
-    esac
-elif [ -n "${BASH_VERSION:-}" ]; then
-    if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-        _unpack_sourced=1
-    fi
-fi
-
-if [ "$_unpack_sourced" -eq 0 ]; then
-    unset _unpack_sourced
-    unpack "$@"
-    exit $?
-fi
-unset _unpack_sourced
+main "$@"

@@ -1,41 +1,55 @@
 #!/usr/bin/env bash
-cleandir() {
-    local recursive=0
+#
+# cleandir - remove empty directories in the current directory.
+#
+# Usage: cleandir [-r]
+#   -r   recurse: also remove empty directories in every subdirectory,
+#        including parents that become empty once their children are gone
 
-    # Parse arguments
-    if [[ "$1" == "-r" || "$1" == "-R" ]]; then
-        recursive=1
-    elif [[ -n "$1" ]]; then
-        echo "Usage: cleandir [-r]"
-        echo "  -r : Recursively check and remove empty folders in all subdirectories."
-        return 1
+# Strict mode and exit would leak into the calling shell, so refuse to be sourced.
+(return 0 2>/dev/null) && { printf 'cleandir: run this as a command, do not source it\n' >&2; return 1; }
+
+set -euo pipefail
+
+prog=cleandir
+
+usage() {
+    printf 'Usage: %s [-r]\n' "$prog"
+    printf '  -r   recursively remove empty folders in all subdirectories\n'
+}
+
+main() {
+    local recursive=0 opt
+
+    if ! command -v find >/dev/null 2>&1; then
+        printf '%s: missing required commands: find\n' "$prog" >&2
+        exit 1
     fi
 
-    if (( recursive )); then
-        echo "Recursively scanning for empty directories..."
-        # -delete automatically implies -depth, safely removing nested empty dirs bottom-up
+    while getopts ':rRh' opt; do
+        case "$opt" in
+            r|R) recursive=1 ;;
+            h) usage; exit 0 ;;
+            *) usage >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    if [ "$#" -gt 0 ]; then
+        usage >&2
+        exit 1
+    fi
+
+    if [ "$recursive" -eq 1 ]; then
+        printf 'Recursively scanning for empty directories...\n'
+        # -delete implies -depth, so nested empty dirs go bottom-up and a
+        # parent emptied by that is caught in the same pass
         find . -mindepth 1 -type d -empty -print -delete
     else
-        echo "Scanning current directory for empty folders..."
-        # -maxdepth 1 limits the search to the current directory only
+        printf 'Scanning current directory for empty folders...\n'
         find . -mindepth 1 -maxdepth 1 -type d -empty -print -delete
     fi
 
-    echo "Clean complete."
+    printf 'Clean complete.\n'
 }
 
-_cleandir_sourced=0
-if [ -n "${ZSH_VERSION:-}" ]; then
-    case ${ZSH_EVAL_CONTEXT} in
-        *:file) _cleandir_sourced=1 ;;
-    esac
-elif [ -n "${BASH_VERSION:-}" ]; then
-    if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-        _cleandir_sourced=1
-    fi
-fi
-
-if [ "$_cleandir_sourced" -eq 0 ]; then
-    cleandir "$@"
-fi
-unset _cleandir_sourced
+main "$@"

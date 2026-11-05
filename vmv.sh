@@ -1,48 +1,61 @@
 #!/usr/bin/env bash
 #
-# vmv - verbose file move using rsync. Removes source files as they
-# transfer and cleans up any empty source directories left behind.
+# vmv - verbose move using rsync. Removes source files as they transfer,
+# then deletes any source directories left empty.
 #
 # Usage: vmv <source> [source...] <destination>
 
-vmv() {
+# Strict mode and exit would leak into the calling shell, so refuse to be sourced.
+(return 0 2>/dev/null) && { printf 'vmv: run this as a command, do not source it\n' >&2; return 1; }
+
+set -euo pipefail
+
+prog=vmv
+
+usage() {
+    printf 'Usage: %s <source> [source...] <destination>\n' "$prog"
+}
+
+main() {
+    local missing=() cmd
+    for cmd in rsync find; do
+        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        printf '%s: missing required commands: %s\n' "$prog" "${missing[*]}" >&2
+        exit 1
+    fi
+
+    case "${1:-}" in
+        -h|--help) usage; exit 0 ;;
+    esac
     if [ "$#" -lt 2 ]; then
-        echo "Usage: vmv <source> [source...] <destination>"
-        return 1
+        usage >&2
+        exit 1
     fi
 
     local args=("$@")
-    local dest="${args[-1]}"
+    local dest="${args[$# - 1]}"
     local sources=("${args[@]:0:$# - 1}")
+    local src rc=0
 
-    rsync -vpartlXEHhP --info=progress2 --remove-source-files "${sources[@]}" "$dest"
-    local rsync_status=$?
+    # -- ends option parsing so a source named like "-n" is a path, not a flag
+    rsync -vpartlXEHhP --info=progress2 --remove-source-files -- "${sources[@]}" "$dest" || rc=$?
 
-    if [ $rsync_status -eq 0 ]; then
-        for src in "${sources[@]}"; do
-            if [ -d "$src" ]; then
-                # Delete deepest empty dirs first, working up to (and including)
-                # the source dir itself if it ended up empty.
-                find "$src" -type d -empty -delete 2>/dev/null
-            fi
-        done
+    if [ "$rc" -ne 0 ]; then
+        printf '%s: rsync exited with %d, source directories left as they are\n' "$prog" "$rc" >&2
+        exit "$rc"
     fi
 
-    return $rsync_status
+    for src in "${sources[@]}"; do
+        # A trailing slash means "the contents of", which still leaves the
+        # directory itself behind as a source, so the same cleanup applies.
+        if [ -d "$src" ]; then
+            # -delete implies -depth: deepest empty dirs go first, working up
+            # to the source dir itself if it ended up empty.
+            find "$src" -type d -empty -delete 2>/dev/null || true
+        fi
+    done
 }
 
-_vmv_sourced=0
-if [ -n "${ZSH_VERSION:-}" ]; then
-    case ${ZSH_EVAL_CONTEXT} in
-        *:file) _vmv_sourced=1 ;;
-    esac
-elif [ -n "${BASH_VERSION:-}" ]; then
-    if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-        _vmv_sourced=1
-    fi
-fi
-
-if [ "$_vmv_sourced" -eq 0 ]; then
-    vmv "$@"
-fi
-unset _vmv_sourced
+main "$@"

@@ -1,51 +1,65 @@
 #!/usr/bin/env bash
 #
-# shredfile - runs shred against a single file with sane arguments, after
-# an interactive confirmation. Note: shred does not reliably wipe data on
-# SSDs due to wear leveling.
+# shredfile - run shred against a single file after a confirmation prompt.
+#
+# shred overwrites the blocks a file currently sits on. On SSDs (wear
+# leveling) and copy-on-write filesystems like Btrfs or ZFS the old data can
+# live somewhere else entirely, so treat this as best effort there.
 #
 # Usage: shredfile <filepath>
 
-shredfile() {
-    if [ -z "$1" ]; then
-        echo "Usage: shredfile <filepath>"
-        return 1
+# Strict mode and exit would leak into the calling shell, so refuse to be sourced.
+(return 0 2>/dev/null) && { printf 'shredfile: run this as a command, do not source it\n' >&2; return 1; }
+
+set -euo pipefail
+
+prog=shredfile
+
+usage() {
+    printf 'Usage: %s <filepath>\n' "$prog"
+}
+
+main() {
+    if ! command -v shred >/dev/null 2>&1; then
+        printf '%s: missing required commands: shred\n' "$prog" >&2
+        exit 1
     fi
 
-    local target="$1"
+    case "${1:-}" in
+        -h|--help) usage; exit 0 ;;
+        "") usage >&2; exit 1 ;;
+    esac
+    if [ "$#" -ne 1 ]; then
+        usage >&2
+        exit 1
+    fi
 
+    local target="$1" response
+
+    # shred follows a symlink and wipes the file it points at, then -u only
+    # removes the link. Make the caller name the real file instead.
+    if [ -L "$target" ]; then
+        printf '%s: "%s" is a symlink, pass the real file path instead\n' "$prog" "$target" >&2
+        exit 1
+    fi
     if [ ! -f "$target" ]; then
-        echo "Error: '$target' not found or is not a regular file."
-        return 1
+        printf '%s: "%s" not found or is not a regular file\n' "$prog" "$target" >&2
+        exit 1
     fi
 
-    printf 'confirm you want to shred file "%s" and understand that shred does not properly work if ran on an ssd (y/n): ' "$target"
-    read -r response
+    printf 'Shred file "%s"? shred is not reliable on SSDs or copy-on-write filesystems (y/N): ' "$target"
+    read -r response || response=""
 
     case "$response" in
         [yY][eE][sS]|[yY])
-            # -v: verbose, -z: add final zero overwrite, -u: remove file after shredding
-            shred -vzu "$target"
-            echo "File shredded."
+            # -v verbose, -z final pass of zeros, -u remove the file afterward
+            shred -vzu -- "$target"
+            printf 'File shredded.\n'
             ;;
         *)
-            echo "Aborted."
+            printf 'Aborted.\n'
             ;;
     esac
 }
 
-_shredfile_sourced=0
-if [ -n "${ZSH_VERSION:-}" ]; then
-    case ${ZSH_EVAL_CONTEXT} in
-        *:file) _shredfile_sourced=1 ;;
-    esac
-elif [ -n "${BASH_VERSION:-}" ]; then
-    if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-        _shredfile_sourced=1
-    fi
-fi
-
-if [ "$_shredfile_sourced" -eq 0 ]; then
-    shredfile "$@"
-fi
-unset _shredfile_sourced
+main "$@"

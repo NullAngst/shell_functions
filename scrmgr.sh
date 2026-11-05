@@ -1,75 +1,79 @@
 #!/usr/bin/env bash
 #
 # scrmgr - single entry point for managing GNU screen sessions.
-# Combines what used to be five separate aliases/functions:
-#   sss (start), srs (reattach), sks (kill), sls (list), swp (wipe)
 #
 # Usage:
-#   scrmgr start <name>    Start a new named session      (was: sss)
-#   scrmgr resume <name>   Reattach to an existing session (was: srs)
-#   scrmgr kill <name>     Kill a session from the outside (was: sks)
-#   scrmgr list            List active sessions            (was: sls alias)
-#   scrmgr wipe            Remove dead sessions             (was: swp alias)
+#   scrmgr start <name>    Start a new named session
+#   scrmgr resume <name>   Reattach to an existing session, detaching it elsewhere first
+#   scrmgr kill <name>     Kill a session from the outside
+#   scrmgr list            List active sessions
+#   scrmgr wipe            Remove dead sessions from the list
 
-scrmgr() {
-    local cmd="$1"
-    [ "$#" -gt 0 ] && shift
+# Strict mode and exit would leak into the calling shell, so refuse to be sourced.
+(return 0 2>/dev/null) && { printf 'scrmgr: run this as a command, do not source it\n' >&2; return 1; }
+
+set -euo pipefail
+
+prog=scrmgr
+
+usage() {
+    printf 'Usage: %s <start|resume|kill|list|wipe> [session_name]\n' "$prog"
+    printf '  start <name>   Start a new named session\n'
+    printf '  resume <name>  Reattach to an existing session\n'
+    printf '  kill <name>    Kill a session from the outside\n'
+    printf '  list           List active sessions\n'
+    printf '  wipe           Remove dead sessions from the list\n'
+    printf '  Inside screen: CTRL+A then \\ kills the session, CTRL+A then d detaches\n'
+}
+
+need_name() {
+    if [ -z "${1:-}" ]; then
+        printf 'Usage: %s %s <session_name>\n' "$prog" "$2" >&2
+        exit 1
+    fi
+}
+
+main() {
+    if ! command -v screen >/dev/null 2>&1; then
+        printf '%s: missing required commands: screen\n' "$prog" >&2
+        exit 1
+    fi
+
+    local cmd="${1:-}"
+    if [ "$#" -gt 0 ]; then
+        shift
+    fi
 
     case "$cmd" in
         start)
-            if [ -z "$1" ]; then
-                echo "Usage: scrmgr start <session_name>"
-                return 1
-            fi
+            need_name "${1:-}" start
             screen -S "$1"
             ;;
         resume)
-            if [ -z "$1" ]; then
-                echo "Usage: scrmgr resume <session_name>"
-                return 1
-            fi
-            # -d -r detaches the session elsewhere first, then reattaches it here
+            need_name "${1:-}" resume
+            # -d -r detaches the session wherever it is attached, then reattaches it here
             screen -d -r "$1"
             ;;
         kill)
-            if [ -z "$1" ]; then
-                echo "Usage: scrmgr kill <session_name>"
-                return 1
-            fi
+            need_name "${1:-}" kill
             screen -X -S "$1" quit
             ;;
         list)
-            screen -list
+            # screen -list exits non-zero whenever there are no live sessions,
+            # which is an answer, not an error
+            screen -list || true
             ;;
         wipe)
-            screen -wipe
+            screen -wipe || true
+            ;;
+        -h|--help)
+            usage
             ;;
         *)
-            echo "Usage: scrmgr <start|resume|kill|list|wipe> [session_name]"
-            echo "  start <name>   Start a new named session"
-            echo "  resume <name>  Reattach to an existing session"
-            echo "  kill <name>    Kill a session from the outside"
-            echo "  list           List active sessions"
-            echo "  wipe           Remove dead sessions from the list"
-            echo "  exit kill      CTRL + A (then) \\"
-            echo "  exit nokill    CTRL + A (then) d"
-            return 1
+            usage >&2
+            exit 1
             ;;
     esac
 }
 
-_scrmgr_sourced=0
-if [ -n "${ZSH_VERSION:-}" ]; then
-    case ${ZSH_EVAL_CONTEXT} in
-        *:file) _scrmgr_sourced=1 ;;
-    esac
-elif [ -n "${BASH_VERSION:-}" ]; then
-    if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-        _scrmgr_sourced=1
-    fi
-fi
-
-if [ "$_scrmgr_sourced" -eq 0 ]; then
-    scrmgr "$@"
-fi
-unset _scrmgr_sourced
+main "$@"

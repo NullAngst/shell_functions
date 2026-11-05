@@ -1,178 +1,223 @@
 #!/usr/bin/env bash
+#
+# ufw_tui - menu-driven front end for ufw: list, add and remove rules, allow
+# or deny by port (80/tcp) or source IP, set default policies,
+# enable/disable/reload, or reset.
+#
+# Usage: sudo ufw_tui
 
-# Ensure script is run as root
-if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root. Use sudo."
-   exit 1
-fi
+# Strict mode and exit would leak into the calling shell, so refuse to be sourced.
+(return 0 2>/dev/null) && { printf 'ufw_tui: run this as a command, do not source it\n' >&2; return 1; }
 
-if ! command -v ufw >/dev/null 2>&1; then
-    echo "Error: ufw is not installed or not in PATH." >&2
-    exit 1
-fi
+set -euo pipefail
 
-# Splits "PORT" or "PORT/PROTO" into PORT_NUM and PORT_PROTO globals.
-parse_port_proto() {
-    local input="$1"
-    if [[ "$input" == */* ]]; then
-        PORT_NUM="${input%%/*}"
-        PORT_PROTO="${input##*/}"
-    else
-        PORT_NUM="$input"
-        PORT_PROTO=""
+prog=ufw_tui
+
+clear_screen() {
+    if [ -t 1 ]; then
+        if command -v clear >/dev/null 2>&1; then
+            clear
+        else
+            printf '\033[H\033[2J'
+        fi
     fi
+}
+
+pause() {
+    local _
+    printf '\n'
+    read -r -p "Press Enter to return to menu..." _ || true
+}
+
+ask() {
+    # $1 prompt, $2 name of the variable to fill. EOF (Ctrl+D) leaves the tool.
+    local reply
+    if ! read -r -p "$1" reply; then
+        printf '\n'
+        exit 0
+    fi
+    printf -v "$2" '%s' "$reply"
+}
+
+# ufw failing on one rule (bad port, typo'd IP) shouldn't drop you out of the menu
+run_ufw() {
+    if ! ufw "$@"; then
+        printf '%s: ufw reported an error, nothing was changed by that command.\n' "$prog" >&2
+    fi
+}
+
+valid_port() {
+    # 22, 80/tcp, 6000:6007/udp, or a service name like ssh
+    [[ "$1" =~ ^([0-9]{1,5}(:[0-9]{1,5})?|[A-Za-z][A-Za-z0-9-]*)(/(tcp|udp))?$ ]]
+}
+
+valid_ip() {
+    # IPv4 or IPv6, optionally with a CIDR prefix. ufw does the strict check.
+    [[ "$1" =~ ^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$ ]]
 }
 
 list_rules() {
-    clear
-    echo "Current UFW Rules:"
-    ufw status numbered
-    echo ""
-    read -p "Press Enter to return to menu..."
+    clear_screen
+    printf 'Current UFW Rules:\n'
+    run_ufw status numbered
+    pause
 }
 
 remove_rule() {
-    clear
-    ufw status numbered
-    echo ""
-    read -p "Enter the rule number to delete (or 'c' to cancel): " rule_num
-    if [[ "${rule_num,,}" != "c" ]]; then
-        ufw delete "$rule_num"
-        echo ""
-        read -p "Press Enter to return to menu..."
+    local rule_num
+    clear_screen
+    run_ufw status numbered
+    printf '\n'
+    ask "Enter the rule number to delete (or 'c' to cancel): " rule_num
+    case "$rule_num" in
+        c|C|"") return 0 ;;
+    esac
+    if [[ ! "$rule_num" =~ ^[0-9]+$ ]]; then
+        printf 'Not a rule number: %s\n' "$rule_num"
+    else
+        # ufw asks for its own confirmation here
+        run_ufw delete "$rule_num"
     fi
+    pause
 }
 
 toggle_ufw() {
-    clear
-    echo "UFW State Management"
-    echo "1) Enable UFW"
-    echo "2) Disable UFW"
-    echo "3) Reload UFW"
-    echo "4) Cancel"
-    read -p "Select an option: " opt
-    case $opt in
-        1) ufw enable ;;
-        2) ufw disable ;;
-        3) ufw reload ;;
-        4) return ;;
-        *) echo "Invalid option." ;;
+    local opt
+    clear_screen
+    printf 'UFW State Management\n'
+    printf '1) Enable UFW\n2) Disable UFW\n3) Reload UFW\n4) Cancel\n'
+    ask "Select an option: " opt
+    case "$opt" in
+        1) run_ufw enable ;;
+        2) run_ufw disable ;;
+        3) run_ufw reload ;;
+        4|"") return 0 ;;
+        *) printf 'Invalid option.\n' ;;
     esac
-    read -p "Press Enter to return to menu..."
+    pause
 }
 
 new_rule() {
-    clear
-    echo "New Rule Menu"
-    echo "1) Open/Allow Port"
-    echo "2) Close/Deny Port"
-    echo "3) Allow specific IP completely"
-    echo "4) Deny specific IP completely"
-    echo "5) Set Default Policy"
-    echo "6) Cancel"
-    read -p "Select an option: " opt
+    local opt action port ip_type ip_addr def_opt port_num port_proto
+    clear_screen
+    printf 'New Rule Menu\n'
+    printf '1) Open/Allow Port\n2) Close/Deny Port\n3) Allow specific IP completely\n'
+    printf '4) Deny specific IP completely\n5) Set Default Policy\n6) Cancel\n'
+    ask "Select an option: " opt
 
-    case $opt in
+    case "$opt" in
         1|2)
-            local action="allow"
-            [[ "$opt" == "2" ]] && action="deny"
-
-            read -p "Enter port number (e.g., 22 or 80/tcp): " port
-            if [[ -z "$port" ]]; then
-                echo "Error: No port entered." >&2
-                read -p "Press Enter to return to menu..."
-                return
+            action=allow
+            if [ "$opt" = 2 ]; then
+                action=deny
+            fi
+            ask "Enter port (e.g. 22, 80/tcp, 6000:6007/udp): " port
+            if ! valid_port "$port"; then
+                printf 'Not a valid port: "%s"\n' "$port" >&2
+                pause
+                return 0
             fi
 
-            read -p "(A)ny IP or (S)pecific IP? [A/s]: " ip_type
-            if [[ "${ip_type,,}" == "s" ]]; then
-                read -p "Enter specific IP address: " ip_addr
-                if [[ -z "$ip_addr" ]]; then
-                    echo "Error: No IP entered." >&2
-                    read -p "Press Enter to return to menu..."
-                    return
-                fi
-                # ufw's "from ... to any port" syntax does not accept "port/proto"
-                # combined; the protocol has to be passed separately via "proto".
-                parse_port_proto "$port"
-                if [[ -n "$PORT_PROTO" ]]; then
-                    ufw "$action" proto "$PORT_PROTO" from "$ip_addr" to any port "$PORT_NUM"
-                else
-                    ufw "$action" from "$ip_addr" to any port "$PORT_NUM"
-                fi
-            else
-                # Simple form does accept "port/proto" shorthand directly.
-                ufw "$action" "$port"
-            fi
+            ask "(A)ny IP or (S)pecific IP? [A/s]: " ip_type
+            case "$ip_type" in
+                s|S)
+                    ask "Enter specific IP address: " ip_addr
+                    if ! valid_ip "$ip_addr"; then
+                        printf 'Not a valid IP address: "%s"\n' "$ip_addr" >&2
+                        pause
+                        return 0
+                    fi
+                    # The "from ... to any port" form doesn't take port/proto
+                    # combined, the protocol goes in separately via "proto".
+                    port_num="${port%%/*}"
+                    port_proto=""
+                    if [[ "$port" == */* ]]; then
+                        port_proto="${port##*/}"
+                    fi
+                    if [ -n "$port_proto" ]; then
+                        run_ufw "$action" proto "$port_proto" from "$ip_addr" to any port "$port_num"
+                    else
+                        run_ufw "$action" from "$ip_addr" to any port "$port_num"
+                    fi
+                    ;;
+                *)
+                    # The simple form takes "port/proto" directly
+                    run_ufw "$action" "$port"
+                    ;;
+            esac
             ;;
-        3)
-            read -p "Enter IP address to allow: " ip_addr
-            if [[ -z "$ip_addr" ]]; then
-                echo "Error: No IP entered." >&2
-                read -p "Press Enter to return to menu..."
-                return
+        3|4)
+            action=allow
+            if [ "$opt" = 4 ]; then
+                action=deny
             fi
-            ufw allow from "$ip_addr"
-            ;;
-        4)
-            read -p "Enter IP address to deny: " ip_addr
-            if [[ -z "$ip_addr" ]]; then
-                echo "Error: No IP entered." >&2
-                read -p "Press Enter to return to menu..."
-                return
+            ask "Enter IP address to $action: " ip_addr
+            if ! valid_ip "$ip_addr"; then
+                printf 'Not a valid IP address: "%s"\n' "$ip_addr" >&2
+                pause
+                return 0
             fi
-            ufw deny from "$ip_addr"
+            run_ufw "$action" from "$ip_addr"
             ;;
         5)
-            echo "1) Default Allow Incoming"
-            echo "2) Default Deny Incoming"
-            echo "3) Default Allow Outgoing"
-            echo "4) Default Deny Outgoing"
-            read -p "Select option: " def_opt
+            printf '1) Default Allow Incoming\n2) Default Deny Incoming\n'
+            printf '3) Default Allow Outgoing\n4) Default Deny Outgoing\n'
+            ask "Select option: " def_opt
             case "$def_opt" in
-                1) ufw default allow incoming ;;
-                2) ufw default deny incoming ;;
-                3) ufw default allow outgoing ;;
-                4) ufw default deny outgoing ;;
-                *) echo "Invalid option." ;;
+                1) run_ufw default allow incoming ;;
+                2) run_ufw default deny incoming ;;
+                3) run_ufw default allow outgoing ;;
+                4) run_ufw default deny outgoing ;;
+                *) printf 'Invalid option.\n' ;;
             esac
             ;;
         *)
-            return
+            return 0
             ;;
     esac
-    echo ""
-    read -p "Press Enter to return to menu..."
+    pause
 }
 
-while true; do
-    clear
-    echo "UFW Management Utility"
-    echo "======================"
-    echo "1) New Rule"
-    echo "2) List Rules"
-    echo "3) Remove Rule"
-    echo "4) Enable / Disable / Reload"
-    echo "5) Reset UFW to factory defaults"
-    echo "6) Exit"
-    read -p "Select an option: " main_opt
+main() {
+    local main_opt reset_confirm
 
-    case $main_opt in
-        1) new_rule ;;
-        2) list_rules ;;
-        3) remove_rule ;;
-        4) toggle_ufw ;;
-        5)
-            read -p "Are you sure you want to reset UFW? All rules will be wiped. [y/N]: " reset_confirm
-            if [[ "${reset_confirm,,}" == "y" ]]; then
-                ufw --force reset
-                read -p "Press Enter to return to menu..."
-            fi
-            ;;
-        6) clear; exit 0 ;;
-        *) 
-            echo "Invalid option."
-            sleep 1
-            ;;
-    esac
-done
+    if [ "$EUID" -ne 0 ]; then
+        printf '%s: this must be run as root. Use sudo.\n' "$prog" >&2
+        exit 1
+    fi
+    if ! command -v ufw >/dev/null 2>&1; then
+        printf '%s: missing required commands: ufw\n' "$prog" >&2
+        exit 1
+    fi
+
+    while true; do
+        clear_screen
+        printf 'UFW Management Utility\n======================\n'
+        printf '1) New Rule\n2) List Rules\n3) Remove Rule\n4) Enable / Disable / Reload\n'
+        printf '5) Reset UFW to factory defaults\n6) Exit\n'
+        ask "Select an option: " main_opt
+
+        case "$main_opt" in
+            1) new_rule ;;
+            2) list_rules ;;
+            3) remove_rule ;;
+            4) toggle_ufw ;;
+            5)
+                ask "Are you sure you want to reset UFW? All rules will be wiped. [y/N]: " reset_confirm
+                case "$reset_confirm" in
+                    [yY]|[yY][eE][sS])
+                        run_ufw --force reset
+                        pause
+                        ;;
+                esac
+                ;;
+            6|q|Q) clear_screen; exit 0 ;;
+            *)
+                printf 'Invalid option.\n'
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+main "$@"

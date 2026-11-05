@@ -1,30 +1,37 @@
 #!/usr/bin/env bash
 #
-# vcp - verbose file copy using rsync, skipping files that already exist
-# at the destination.
+# vcp - verbose copy using rsync, skipping files that already exist at the
+# destination.
 #
-# Usage: vcp <source> <destination>
+# Usage: vcp <source> [source...] <destination>
 
-vcp() {
-    if [ "$#" -lt 2 ]; then
-        echo "Usage: vcp <source> [source...] <destination>"
-        return 1
-    fi
-    rsync -vpartlXEHhP --info=progress2 --ignore-existing "$@"
+# Strict mode and exit would leak into the calling shell, so refuse to be sourced.
+(return 0 2>/dev/null) && { printf 'vcp: run this as a command, do not source it\n' >&2; return 1; }
+
+set -euo pipefail
+
+prog=vcp
+
+usage() {
+    printf 'Usage: %s <source> [source...] <destination>\n' "$prog"
 }
 
-_vcp_sourced=0
-if [ -n "${ZSH_VERSION:-}" ]; then
-    case ${ZSH_EVAL_CONTEXT} in
-        *:file) _vcp_sourced=1 ;;
-    esac
-elif [ -n "${BASH_VERSION:-}" ]; then
-    if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-        _vcp_sourced=1
+main() {
+    if ! command -v rsync >/dev/null 2>&1; then
+        printf '%s: missing required commands: rsync\n' "$prog" >&2
+        exit 1
     fi
-fi
 
-if [ "$_vcp_sourced" -eq 0 ]; then
-    vcp "$@"
-fi
-unset _vcp_sourced
+    case "${1:-}" in
+        -h|--help) usage; exit 0 ;;
+    esac
+    if [ "$#" -lt 2 ]; then
+        usage >&2
+        exit 1
+    fi
+
+    # -- ends option parsing so a source named like "-n" is a path, not a flag
+    rsync -vpartlXEHhP --info=progress2 --ignore-existing -- "$@"
+}
+
+main "$@"
