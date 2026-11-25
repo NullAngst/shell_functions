@@ -1,5 +1,52 @@
 # Changes
 
+2026.11.25 - Backend overhaul / Security patches
+
+* Every script now parses its flags with getopts (long options like `--help` go through getopts too) and takes `-h` / `--help`
+* Plain tests use `[ ]` instead of `[[ ]]` and `(( ))`. `[[ ]]` is left only where it does pattern matching, `(( ))` only for `for` loops
+* Root checks use `id -u` instead of bash's `$EUID`
+* `LC_ALL=C` on every command whose output gets parsed (df, ffmpeg -encoders/-filters, cdparanoia, pacman, getent)
+* Trap handlers carry both shellcheck codes (SC2317 and SC2329), so the scripts pass clean on shellcheck 0.9 through 0.11
+* Install directory renamed from `lib/shell-functions` to `lib/shell_functions`, matching the repo. funcupdate removes the old directory and its symlinks
+* funcupdate: new `-u` / `--user` mode deploys to `~/.local` for Option A installs, which had no updater before
+* funcupdate: no longer replaces a file in the bin directory that it didn't create, it skips that command with a warning
+* system_update and funcupdate: log file renamed to `/var/log/system_update.log`
+* system_update: package cleanup (autoremove, depclean, orphan removal) only runs when the upgrade before it succeeded. A depclean after a half-finished Gentoo world update can remove things the system still needs
+* system_update: `emerge --ask=n`, so an `--ask` in EMERGE_DEFAULT_OPTS can't stall an unattended run
+* system_update: openSUSE MicroOS, Aeon and Kalpa (read-only root) now update through `transactional-update dup`
+* system_update: added Solus (eopkg), unused Flatpak runtimes get removed, NixOS uses `nixos-rebuild switch --upgrade`
+* pw_manager: bug fix. Closing a vault, or typing a wrong password, quit the whole program instead of going back to the menu
+* pw_manager: settings and the known-vaults list moved to `~/.config/pw_manager/`, old files are moved over on first run
+* pw_manager: new vaults (made directly or by CSV import) are locked while being created and added to the known-vaults list
+* pw_manager: vault paths are stored absolute, so the list works from any directory
+* pw_manager: arrow keys work in terminals that send application cursor codes (ESC O A)
+* pw_manager: editor picked from `$VISUAL`, then `$EDITOR` (arguments allowed, like `code -w`), then nano, then vi
+* pw_manager: a vault in a folder you can't write to now says so, instead of claiming it's open elsewhere
+* pw_manager: settings that can't be saved show a message instead of crashing the program
+* ripcd 6.1: composers were never found. The lookup read a composer relation off the recording, but MusicBrainz keeps it on the work. Now follows recording to work to composer or writer
+* ripcd: hidden track detection never fired, since cdparanoia doesn't list a track 0. It now checks whether track 1 starts late, and asks before ripping since some drives stall reading that area. It also works for WAV, MP3 and OGG-only rips now
+* ripcd: removed a GNU-only `\|` from a sed pattern, which broke the rip quality line on non-GNU sed
+* ripcd: checkpoint folder renamed to `~/.cache/ripcd/`, the old one is moved over
+* ripcd: the save directory is made absolute, so the encoders can never read a path as an option
+* media_transcode 10: config, logs and the in-library state folder renamed from `media-transcode` to `media_transcode`, old ones moved over on first run
+* media_transcode: required commands checked before anything else, SIGHUP handled like Ctrl+C
+* unpack: archives inside subfolders of an extracted archive are now found. Before, only the top level of what came out was checked
+* unpack: new `-r` to search the subfolders of a directory you point it at
+* unpack: deleting a finished set compared names without case, so unpacking `Foo.zip` also deleted an unrelated `foo.zip` next to it
+* unpack: tar.zst goes through zstd instead of relying on tar to detect it, which BusyBox and older GNU tar can't
+* unpack: passworded rar archives fail right away instead of waiting on a prompt
+* 2mp3/2flac/2ogg: a file name with a colon, like `Intro: Live.flac`, made ffmpeg look for a network protocol and fail
+* decode and ffile: on a terminal, control bytes in the output show as dots, so decoded or file-supplied escape sequences can't act on your terminal
+* folder_encrypt: `.` and `..` work as targets, and `/` is refused
+* file_encrypt: sets GPG_TTY so the terminal passphrase prompt works without a desktop pinentry
+* shredfolder and cleandir: a folder name starting with `-` is passed to find as a path, not read as an expression
+* cleandir: takes a directory argument
+* use_my_zsh: every step of installing a zshrc checks its own result, so a failed copy no longer reports success
+* bashrc: the prompt hook goes in front of an existing PROMPT_COMMAND instead of replacing it, so terminal integrations keep working
+* README, maintenance.md and funchelp updated to match
+
+Reasons for changes: the scripts now follow the shell script rules in full, and a line-by-line review turned up the bugs above, several of which (pw_manager quitting, ripcd composers and hidden tracks, unpack's case-blind delete) were silent.
+
 2026.11.04 - Backend overhaul / Security patches / New script
 
 * Every script now runs in strict mode (`set -euo pipefail`), checks its required commands up front and lists the missing ones, uses printf instead of echo, and passes shellcheck with no warnings

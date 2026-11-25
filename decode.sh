@@ -5,7 +5,7 @@
 # URL/percent, ROT13, ROT47, Atbash, HTML entities, and all 25 Caesar shifts.
 # Schemes the input can't be are left blank.
 #
-# Usage: decode '<string>'
+# Usage: decode [-h] [--] '<string>'
 
 # Strict mode and exit would leak into the calling shell, so refuse to be sourced.
 (return 0 2>/dev/null) && { printf 'decode: run this as a command, do not source it\n' >&2; return 1; }
@@ -13,6 +13,12 @@
 set -euo pipefail
 
 prog=decode
+
+usage() {
+    printf "Usage: %s [-h] [--] '<string>'\n" "$prog"
+    printf '  Prints every plausible decoding of the string. Put -- before a string\n'
+    printf '  that starts with -.\n'
+}
 
 # Byte-level tr and regex ranges, independent of the user's locale
 export LC_ALL=C
@@ -110,8 +116,23 @@ main() {
         exit 1
     fi
 
+    local opt
+    while getopts ':h-:' opt; do
+        case "$opt" in
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s (put -- before a string that starts with -)\n' "$prog" "$OPTARG" >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s (put -- before a string that starts with -)\n' "$prog" "$OPTARG" >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
     if [ "$#" -ne 1 ] || [ -z "$1" ]; then
-        printf "Usage: %s '<string>'\n" "$prog" >&2
+        usage >&2
         exit 1
     fi
 
@@ -212,4 +233,13 @@ main() {
     done
 }
 
-main "$@"
+# Decoded bytes can be anything, including escape sequences that a terminal
+# would act on. On a terminal, control bytes other than tab and newline are
+# shown as dots. Piped or redirected output stays byte-exact.
+if [ -t 1 ]; then
+    # 31 control bytes in, 31 dots out: equal-length sets keep tr portable
+    dots="$(printf '%31s' '' | tr ' ' '.')"
+    main "$@" | tr '\000-\010\013-\037\177' "$dots"
+else
+    main "$@"
+fi

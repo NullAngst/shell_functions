@@ -4,7 +4,7 @@
 # or deny by port (80/tcp) or source IP, set default policies,
 # enable/disable/reload, or reset.
 #
-# Usage: sudo ufw_tui
+# Usage: sudo ufw_tui [-h]
 
 # Strict mode and exit would leak into the calling shell, so refuse to be sourced.
 (return 0 2>/dev/null) && { printf 'ufw_tui: run this as a command, do not source it\n' >&2; return 1; }
@@ -12,6 +12,12 @@
 set -euo pipefail
 
 prog=ufw_tui
+
+usage() {
+    printf 'Usage: sudo %s [-h]\n' "$prog"
+    printf '  Menu-driven front end for ufw: list, add and remove rules, set default\n'
+    printf '  policies, enable, disable, reload or reset the firewall.\n'
+}
 
 clear_screen() {
     if [ -t 1 ]; then
@@ -42,7 +48,7 @@ ask() {
 # ufw failing on one rule (bad port, typo'd IP) shouldn't drop you out of the menu
 run_ufw() {
     if ! ufw "$@"; then
-        printf '%s: ufw reported an error, nothing was changed by that command.\n' "$prog" >&2
+        printf '%s: ufw reported an error, see its message above.\n' "$prog" >&2
     fi
 }
 
@@ -131,9 +137,9 @@ new_rule() {
                     # combined, the protocol goes in separately via "proto".
                     port_num="${port%%/*}"
                     port_proto=""
-                    if [[ "$port" == */* ]]; then
-                        port_proto="${port##*/}"
-                    fi
+                    case "$port" in
+                        */*) port_proto="${port##*/}" ;;
+                    esac
                     if [ -n "$port_proto" ]; then
                         run_ufw "$action" proto "$port_proto" from "$ip_addr" to any port "$port_num"
                     else
@@ -179,14 +185,33 @@ new_rule() {
 }
 
 main() {
-    local main_opt reset_confirm
+    local main_opt reset_confirm opt
 
-    if [ "$EUID" -ne 0 ]; then
-        printf '%s: this must be run as root. Use sudo.\n' "$prog" >&2
-        exit 1
-    fi
     if ! command -v ufw >/dev/null 2>&1; then
         printf '%s: missing required commands: ufw\n' "$prog" >&2
+        exit 1
+    fi
+
+    while getopts ':h-:' opt; do
+        case "$opt" in
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    if [ "$#" -gt 0 ]; then
+        usage >&2
+        exit 1
+    fi
+
+    if [ "$(id -u)" -ne 0 ]; then
+        printf '%s: this must be run as root. Use sudo.\n' "$prog" >&2
         exit 1
     fi
 

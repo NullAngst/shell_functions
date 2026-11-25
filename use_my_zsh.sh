@@ -4,7 +4,7 @@
 # zshrc from NullAngst/shell_functions for both, with the Kawaii Dark prompt
 # by default. Installs zsh first if it's missing.
 #
-# Usage: sudo use_my_zsh [-u USER] [-t THEME] [-R] [-n] [-k] [-y]
+# Usage: sudo use_my_zsh [-u USER] [-t THEME] [-R] [-n] [-k] [-y] [-h]
 #   -u USER    set up this user (default: whoever ran sudo)
 #   -t THEME   prompt theme to make the default (default: kawaii-dark)
 #              kawaii-dark kawaii-light amber blurple modern-dark modern-light verdigris-copper
@@ -41,10 +41,27 @@ die() { printf '%s%s:%s %s\n' "$C_RED" "$prog" "$C_RST" "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
-    sed -n '3,19p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || printf 'Usage: sudo %s [-u USER] [-t THEME] [-R] [-n] [-k] [-y]\n' "$prog"
+    cat <<USAGE
+Usage: sudo $prog [-u USER] [-t THEME] [-R] [-n] [-k] [-y] [-h]
+
+Makes zsh the login shell for you and for root, and installs the zshrc from
+NullAngst/shell_functions for both. Installs zsh first if it's missing.
+
+  -u USER    set up this user (default: whoever ran sudo)
+  -t THEME   prompt theme to make the default (default: kawaii-dark)
+             $THEMES
+  -R         leave root alone, only set up the user
+  -n         also make zsh the default shell for accounts created later
+  -k         also install the matching kitty theme for the user, from
+             NullAngst/kitty-themes (needs git)
+  -y         don't ask before installing zsh
+  -h         show this help
+
+An existing ~/.zshrc is backed up as ~/.zshrc.bak-<date> before it's replaced.
+USAGE
 }
 
-# shellcheck disable=SC2329  # invoked via trap
+# shellcheck disable=SC2317,SC2329  # invoked via trap
 cleanup() {
     if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
         rm -rf -- "$TMP_DIR"
@@ -159,8 +176,11 @@ register_shell() {
 install_rc() {
     local user="$1" home group dest stamp
     home="$(passwd_field "$user" 6)"
-    [ -n "$home" ] && [ -d "$home" ] || { warn "$user has no home directory, skipping their zshrc"; return 1; }
-    group="$(id -gn -- "$user")"
+    if [ -z "$home" ] || [ ! -d "$home" ]; then
+        warn "$user has no home directory, skipping their zshrc"
+        return 1
+    fi
+    group="$(id -gn -- "$user")" || { warn "cannot find the group of $user"; return 1; }
     dest="$home/.zshrc"
     stamp="$(date +%Y%m%d-%H%M%S)"
 
@@ -168,13 +188,15 @@ install_rc() {
         say "$dest is already up to date"
         return 0
     fi
+    # This runs with errexit suspended (it's called from an || list), so
+    # every step checks its own result
     if [ -e "$dest" ] || [ -L "$dest" ]; then
-        mv -- "$dest" "$dest.bak-$stamp"
+        mv -- "$dest" "$dest.bak-$stamp" || { warn "could not back up $dest, left it alone"; return 1; }
         say "Backed up the old $dest to $dest.bak-$stamp"
     fi
-    cp -- "$TMP_DIR/zshrc" "$dest"
-    chmod 644 -- "$dest"
-    chown -- "$user:$group" "$dest"
+    cp -- "$TMP_DIR/zshrc" "$dest" || { warn "could not write $dest"; return 1; }
+    chmod 644 -- "$dest" || { warn "could not set permissions on $dest"; return 1; }
+    chown -- "$user:$group" "$dest" || { warn "could not hand $dest to $user"; return 1; }
     ok "Installed $dest"
 }
 
@@ -269,7 +291,7 @@ main() {
         die "missing required commands: ${missing[*]}"
     fi
 
-    while getopts ':u:t:Rnkyh' opt; do
+    while getopts ':u:t:Rnkyh-:' opt; do
         case "$opt" in
             u) target_user="$OPTARG" ;;
             t) theme="$(printf '%s' "$OPTARG" | tr '[:upper:] _' '[:lower:]--')" ;;
@@ -278,6 +300,12 @@ main() {
             k) kitty=1 ;;
             y) ASSUME_YES=1 ;;
             h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) die "unknown option --$OPTARG (see -h)" ;;
+                esac
+                ;;
             :) die "option -$OPTARG needs a value" ;;
             *) die "unknown option -$OPTARG (see -h)" ;;
         esac
@@ -290,7 +318,7 @@ main() {
         *) die "unknown theme '$theme'. Pick one of: $THEMES" ;;
     esac
 
-    [ "$EUID" -eq 0 ] || die "this changes login shells and /etc/shells, so it needs root. Run it with sudo."
+    [ "$(id -u)" -eq 0 ] || die "this changes login shells and /etc/shells, so it needs root. Run it with sudo."
 
     if [ -z "$target_user" ]; then
         target_user="${SUDO_USER:-}"

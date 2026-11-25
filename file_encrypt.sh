@@ -3,8 +3,8 @@
 # file_encrypt - encrypt or decrypt a file with GPG symmetric AES-256.
 #
 # Usage:
-#   file_encrypt FILE          encrypt to FILE.gpg
-#   file_encrypt -D FILE.gpg   decrypt to FILE (or FILE.gpg.decrypted)
+#   file_encrypt [--] FILE          encrypt to FILE.gpg
+#   file_encrypt -D [--] FILE.gpg   decrypt to FILE (or FILE.decrypted)
 #
 # Never writes over an existing file. Asks before deleting the source.
 
@@ -24,8 +24,10 @@ Usage: $prog [OPTIONS] FILE
 Encrypt or decrypt a file using GPG symmetric AES-256 encryption.
 
 Options:
-  -h, -H    Show this help message and exit
-  -D        Decrypt the specified file
+  -h, --help       Show this help message and exit
+  -D, --decrypt    Decrypt the specified file
+
+Never writes over an existing file, and asks before deleting the source.
 
 Examples:
   Encrypt a file:
@@ -63,11 +65,18 @@ main() {
         exit 1
     fi
 
-    while getopts ':DhH' opt; do
+    while getopts ':DhH-:' opt; do
         case "$opt" in
             D) mode=decrypt ;;
             h|H) show_help; exit 0 ;;
-            *) printf '%s: invalid option -%s\n' "$prog" "$OPTARG" >&2; show_help >&2; exit 1 ;;
+            -)
+                case "$OPTARG" in
+                    help) show_help; exit 0 ;;
+                    decrypt) mode=decrypt ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; show_help >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; show_help >&2; exit 1 ;;
         esac
     done
     shift $((OPTIND - 1))
@@ -88,8 +97,15 @@ main() {
         exit 1
     fi
 
+    # gpg's terminal passphrase prompt (pinentry-curses or -tty) needs to
+    # know which terminal to draw on
+    if [ -t 0 ]; then
+        GPG_TTY="$(tty)"
+        export GPG_TTY
+    fi
+
     trap cleanup EXIT
-    trap 'exit 130' INT TERM
+    trap 'exit 130' INT TERM HUP
 
     if [ "$mode" = encrypt ]; then
         OUT_FILE="$file.gpg"

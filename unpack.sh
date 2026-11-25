@@ -7,18 +7,23 @@
 # rar, 7z, bare gz/bz2/xz/zst, and multi-volume sets (.partN.rar, .rNN/.sNN,
 # .zNN, .zip.NNN, .7z.NNN, and generic .NNN splits such as name.tar.001).
 #
-# Usage: unpack [-k] [-n] [-v] [-d N] <file|directory> [more...]
+# Usage: unpack [-k] [-n] [-v] [-r] [-d N] <file|directory> [more...]
 #   -k   keep source archives instead of deleting them
 #   -n   dry run: report what would happen, change nothing
 #   -v   verbose: show extractor output
+#   -r   for a directory target, also look in its subdirectories
 #   -d N maximum nesting depth for archives inside archives (default 8)
 #   -h   this help
+#
+# Everything an archive extracts is searched in full, subfolders included,
+# for archives inside it. A directory given on the command line is only
+# searched at its top level unless -r is given.
 #
 # Exit status: 0 if every target succeeded, 1 otherwise, 2 on usage errors.
 #
 # External tools are only required for the formats actually encountered:
-# tar, gzip, bzip2, xz, zstd, unrar (or 7z), and 7z/7zz/7za. find and tr are
-# always needed.
+# tar, gzip, bzip2, xz, zstd, unrar (or 7z), and 7z/7zz/7za. find is always
+# needed.
 
 # Strict mode and exit would leak into the calling shell, so refuse to be sourced.
 (return 0 2>/dev/null) && { printf 'unpack: run this as a command, do not source it\n' >&2; return 1; }
@@ -30,13 +35,15 @@ _unpack_keep=0
 _unpack_dry=0
 _unpack_verbose=0
 _unpack_maxdepth=8
+_unpack_recurse=0
 
 _unpack_usage() {
     cat <<'EOF'
-Usage: unpack [-k] [-n] [-v] [-d N] <file|directory> [more...]
+Usage: unpack [-k] [-n] [-v] [-r] [-d N] <file|directory> [more...]
   -k   keep source archives instead of deleting them
   -n   dry run: report what would happen, change nothing
   -v   verbose: show extractor output
+  -r   for a directory target, also look in its subdirectories
   -d N maximum nesting depth for archives inside archives (default 8)
   -h   show this help
 EOF
@@ -45,7 +52,7 @@ EOF
 _unpack_warn() { printf 'unpack: %s\n' "$*" >&2; }
 _unpack_info() { printf '%s\n' "$*"; }
 _unpack_have() { command -v "$1" >/dev/null 2>&1; }
-_unpack_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+_unpack_lower() { printf '%s' "${1,,}"; }
 
 # Run an extractor with stdin closed (so it can never block on a password
 # prompt) and stdout suppressed unless -v was given. stderr always passes
@@ -159,20 +166,20 @@ _unpack_unique_path() {
 }
 
 # Delete the volumes belonging to one archive set. The prefix is compared
-# literally (case-insensitively) rather than being spliced into a glob, so a
-# name containing *, ? or [ ] cannot reach unrelated files.
+# literally rather than being spliced into a glob, so a name containing *, ?
+# or [ ] cannot reach unrelated files. The prefix must match exactly, so
+# unpacking Foo.zip never takes foo.zip with it. Only the volume suffix
+# (.R01 vs .r01) is compared without regard to case.
 _unpack_delete_set() {
     local dir="$1" prefix="$2" mode="$3"
-    local plower=""
-    plower=$(_unpack_lower "$prefix")
-    local plen="${#plower}"
-    local f="" b="" bl="" suf=""
+    local plen="${#prefix}"
+    local f="" b="" suf=""
 
     while IFS= read -r -d '' f; do
         b="${f##*/}"
-        bl=$(_unpack_lower "$b")
-        [ "${bl:0:$plen}" = "$plower" ] || continue
-        suf="${bl:$plen}"
+        [ "${b:0:$plen}" = "$prefix" ] || continue
+        suf="${b:$plen}"
+        suf="${suf,,}"
         case "$mode" in
             rar_old)  [[ $suf =~ ^\.(rar|r[0-9][0-9]|s[0-9][0-9])$ ]] || continue ;;
             rar_part) [[ $suf =~ ^\.part[0-9]+\.rar$ ]] || continue ;;
@@ -210,9 +217,14 @@ _unpack_extract() {
                 tar_xz)  _unpack_have xz    || { _unpack_missing xz "$file"; return 1; }
                          _unpack_run tar "-x${tv}Jf" "$file" -C "$dest" ;;
                 tar_zst) _unpack_have zstd  || { _unpack_missing zstd "$file"; return 1; }
-                         # Relies on tar's compression auto-detection
-                         # (GNU tar 1.31+ or bsdtar).
-                         _unpack_run tar "-x${tv}f" "$file" -C "$dest" ;;
+                         # Piped through zstd rather than trusting tar to
+                         # detect it, since BusyBox and older GNU tar can't
+                         if [ "$_unpack_verbose" -eq 1 ]; then
+                             zstd -dcq "$file" < /dev/null | tar -xvf - -C "$dest"
+                         else
+                             zstd -dcq "$file" < /dev/null | tar -xf - -C "$dest" > /dev/null
+                         fi
+                         ;;
             esac
             ;;
         gz)  _unpack_have gzip  || { _unpack_missing gzip "$file"; return 1; }
@@ -224,10 +236,11 @@ _unpack_extract() {
         zst) _unpack_have zstd  || { _unpack_missing zstd "$file"; return 1; }
              zstd -dcq "$file" > "$dest/$stem" ;;
         rar)
+            # -p- fails a passworded archive right away instead of asking
             if _unpack_have unrar; then
-                _unpack_run unrar x -or -y "$file" "$dest/"
+                _unpack_run unrar x -or -y -p- "$file" "$dest/"
             elif _unpack_have rar; then
-                _unpack_run rar x -or -y "$file" "$dest/"
+                _unpack_run rar x -or -y -p- "$file" "$dest/"
             else
                 z=$(_unpack_7zbin) || { _unpack_missing "unrar or 7z" "$file"; return 1; }
                 [ "$z" = "7za" ] && { _unpack_missing unrar "$file"; return 1; }
@@ -245,18 +258,25 @@ _unpack_extract() {
     esac
 }
 
-# Scan one directory level for archives worth unpacking.
+# Scan a directory for archives worth unpacking. With walk=1 the whole tree
+# below it is searched, otherwise only its top level.
 _unpack_dir() {
-    local dir="$1" depth="$2"
+    local dir="$1" depth="$2" walk="${3:-0}"
     local rc=0 f="" b="" bl=""
-    local -a found=()
+    local -a found=() limit=()
+
+    # -mindepth and -maxdepth are not POSIX, but GNU, BSD and BusyBox find
+    # all have them
+    if [ "$walk" -eq 0 ]; then
+        limit=(-maxdepth 1)
+    fi
 
     # Collect the listing first. Unpacking writes new files into this same
     # directory and deletes volumes from it, so reading find's output while
     # that happens could hand back a file twice or one that's already gone.
     while IFS= read -r -d '' f; do
         found+=("$f")
-    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -print0)
+    done < <(find "$dir" -mindepth 1 "${limit[@]}" -type f -print0)
 
     for f in "${found[@]}"; do
         # Removed as a sibling volume, or already unpacked as a nested result
@@ -285,7 +305,7 @@ _unpack_one() {
     fi
 
     if [ -d "$target" ]; then
-        _unpack_dir "$target" "$depth"
+        _unpack_dir "$target" "$depth" "$_unpack_recurse"
         return
     fi
     if [ ! -f "$target" ]; then
@@ -386,7 +406,8 @@ _unpack_one() {
             _unpack_warn "'$base' contained nothing"
             return 0
         fi
-        _unpack_dir "$dest" $((depth + 1)) || return 1
+        # Search everything that came out, subfolders included
+        _unpack_dir "$dest" $((depth + 1)) 1 || return 1
         return 0
     fi
 
@@ -402,22 +423,25 @@ _unpack_one() {
 main() {
     local opt="" rc=0 t=""
 
-    local missing=() cmd
-    for cmd in find tr; do
-        _unpack_have "$cmd" || missing+=("$cmd")
-    done
-    if [ "${#missing[@]}" -gt 0 ]; then
-        _unpack_warn "missing required commands: ${missing[*]}"
+    if ! _unpack_have find; then
+        _unpack_warn "missing required commands: find"
         return 1
     fi
 
-    while getopts ':knvd:h' opt; do
+    while getopts ':knvrd:h-:' opt; do
         case "$opt" in
             k) _unpack_keep=1 ;;
             n) _unpack_dry=1 ;;
             v) _unpack_verbose=1 ;;
+            r) _unpack_recurse=1 ;;
             d) _unpack_maxdepth="$OPTARG" ;;
             h) _unpack_usage; return 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) _unpack_usage; return 0 ;;
+                    *) _unpack_warn "unknown option --$OPTARG"; return 2 ;;
+                esac
+                ;;
             :) _unpack_warn "option -$OPTARG requires an argument"; return 2 ;;
             *) _unpack_warn "unknown option -$OPTARG"; return 2 ;;
         esac
