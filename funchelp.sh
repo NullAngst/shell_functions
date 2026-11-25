@@ -61,7 +61,7 @@ file_encrypt    : GPG AES-256 encrypt or decrypt a file (file_encrypt [-D] <file
 folder_encrypt  : Tar + GPG-encrypt a folder, -D reverses, -R bulk mode (folder_encrypt [-D] [-R] <target>)
 pw_manager      : Terminal password manager with GPG vaults and CSV import/export
 ripcd           : Interactive CD ripper with MusicBrainz tags, cover art, CUE and logs (ripcd [-v])
-media_transcode : Batch-shrink large SDR video to HEVC MKV, skips HDR/DV (media_transcode --help)
+media_transcode : Batch-shrink large video to HEVC MKV, HDR/DV tone mapped to SDR (media_transcode --help)
 system_update   : Full upgrade with the native package manager plus Flatpak/Snap, needs root (system_update [-l])
 ufw_tui         : Menu-driven front end for ufw, needs root
 use_my_zsh      : Make zsh your and root's login shell with the bundled zshrc, needs root (use_my_zsh -h)

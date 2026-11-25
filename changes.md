@@ -1,5 +1,20 @@
 # Changes
 
+2026.11.25 - media_transcode HDR support
+
+* media_transcode 11: HDR10, HLG, HDR10+ and Dolby Vision files are tone mapped to SDR BT.709 instead of skipped. BT.2020 SDR files are gamut mapped to BT.709
+* Two backends: libplacebo (GPU through Vulkan, reads HDR10+ and the Dolby Vision RPU) and zscale + tonemap (CPU). `auto` tests libplacebo at start and falls back to zscale with the reason printed
+* Dolby Vision without an HDR10/HLG base layer (profile 5) is only converted with libplacebo, always with CPU decode, and skipped and logged otherwise
+* BT.2020 files with no transfer tag are still skipped and logged, since they could be HDR or SDR
+* New settings `HDR_MODE` (tonemap/skip), `TONEMAP_BACKEND` (auto/libplacebo/zscale), `TONEMAP_CURVE` (auto/hable/mobius/reinhard/bt.2390/spline), as flags `--hdr`, `--tonemap-backend`, `--tonemap-curve` and menu item 15. Advanced moved to 16
+* Converted files are encoded through `-filter_complex`, have HDR and Dolby Vision frame metadata stripped, and get `-dolbyvision 0` on encoders that know it. ffmpeg 6.1 otherwise copies the source's mastering display and light level metadata onto the SDR output
+* The verify step now fails a converted file whose output isn't tagged bt709 or still carries HDR / Dolby Vision metadata, so the original is kept
+* With GPU encoders, HDR files decode on the GPU and download to system memory for tone mapping, then retry with CPU decode on failure as before
+* Skip messages and the HDR log say why a file was skipped. The summary counts how many outputs were converted to SDR, and the marker tag records the backend
+* fmt_size printed negative byte counts raw, e.g. "saved -841278 B" when outputs grew
+
+Reasons for changes: HDR sources had to be converted by hand. Tone mapping in the script makes them part of the normal batch, and the metadata stripping plus the verify check keep an SDR file from going out tagged as HDR.
+
 2026.11.25 - Backend overhaul / Security patches
 
 * Every script now parses its flags with getopts (long options like `--help` go through getopts too) and takes `-h` / `--help`
