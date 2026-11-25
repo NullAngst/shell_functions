@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# media_transcode - batch-shrink large SDR video files to HEVC (H.265) MKV
+# media_transcode - batch-shrink large video files to HEVC (H.265) MKV
 #
 # Scans a directory tree for large video files and re-encodes them to HEVC,
-# optionally downscaling. HDR10, HLG, Dolby Vision and BT.2020 sources are
-# SKIPPED and logged for manual conversion (e.g. HandBrake): this script does
-# no tone mapping and no HDR metadata passthrough.
+# optionally downscaling. HDR10, HLG, HDR10+ and Dolby Vision sources are
+# tone mapped to SDR BT.709 (libplacebo on the GPU through Vulkan, or zscale +
+# tonemap on the CPU), and BT.2020 SDR sources are gamut mapped to BT.709.
+# Set HDR_MODE=skip to leave them alone and log them instead. HDR metadata is
+# never passed through: every output is SDR BT.709 or keeps its SDR tags.
 #
 # Run with no arguments for the interactive settings screen. For unattended
 # runs (cron, systemd) pass flags or a saved profile plus --yes. See --help.
@@ -15,7 +17,7 @@
 
 set -euo pipefail
 
-readonly VERSION="10"
+readonly VERSION="11"
 readonly PROG=${0##*/}
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
@@ -31,6 +33,7 @@ SETTING_KEYS=(
     AUDIO AUDIO_CODEC ORIGINALS ARCHIVE_DIR OUTPUT_DIR OUTPUT_SUFFIX
     SCRATCH_DIR WIP_DIR SKIP_CODECS MAX_OUTPUT_PCT ORDER
     X265_PRESET X265_PARAMS NVENC_PRESET VAAPI_DEVICE HW_DECODE NICE EXTENSIONS
+    HDR_MODE TONEMAP_BACKEND TONEMAP_CURVE
 )
 SCAN_DIR=""
 MIN_SIZE_GB="20"
@@ -56,6 +59,10 @@ VAAPI_DEVICE="/dev/dri/renderD128"
 HW_DECODE="auto"
 NICE="10"
 EXTENSIONS="mkv mp4 m4v avi mov ts m2ts mts webm wmv mpg mpeg"
+HDR_MODE="tonemap"
+TONEMAP_BACKEND="auto"
+TONEMAP_CURVE="auto"
+readonly TONEMAP_CURVES="auto hable mobius reinhard bt.2390 spline"
 
 # --- Runtime options (not saved in profiles) ---
 DRY_RUN=0
@@ -84,6 +91,9 @@ HAVE_FLOCK=0
 NICE_PREFIX=()
 VIDEO_ENC=(); ATTEMPTS=(); SW_FMT=""; HW_FMT=""
 FF_ENCODERS=""; FF_FILTERS=""
+# Tone mapping, resolved once per run
+TM_BACKEND=""; TM_REASON=""; TM_CURVE=""; TM_STRIP=""
+ENC_HDR_ARGS=()
 declare -A CLI_SET=()
 declare -A P=()
 FILES=(); SIZES=()
@@ -98,10 +108,15 @@ LOCK_FD=""; LOCK_FILE=""
 # --- Probe results / messages ---
 PR_SI=""; PR_VIDX=""; PR_VCODEC=""; PR_W=""; PR_H=""; PR_PIXFMT=""
 PR_TRC=""; PR_PRIM=""; PR_SPACE=""; PR_RANGE=""; PR_HDR=""; PR_MARKER=""; PR_DUR_US=0
+# PR_KIND: pq | hlg | dv-rpu (Dolby Vision with no HDR10/HLG base layer) |
+# gamut (BT.2020 SDR) | unsure (BT.2020 with no transfer tag) | empty for SDR
+PR_KIND=""
 ORIG_MSG=""; VERIFY_MSG=""
+# Per-file HDR decision
+HDR_CONVERT=0; HDR_SKIP_WHY=""; TM_VF=""
 
 # --- Counters ---
-CNT_DONE=0; CNT_HDR=0; CNT_SKIP=0; CNT_NOGAIN=0; CNT_FAIL=0; CNT_DRY=0
+CNT_DONE=0; CNT_HDR=0; CNT_SKIP=0; CNT_NOGAIN=0; CNT_FAIL=0; CNT_DRY=0; CNT_TM=0
 BYTES_IN=0; BYTES_OUT=0
 FAILED_FILES=()
 STARTED=0; STOP_REQUESTED=0; RUN_T0=0
@@ -131,6 +146,7 @@ rule() { printf '%s\n' "--------------------------------------------------------
 fmt_size() {
     local b=${1:-0} whole rem=0 u=0
     local units=(B KiB MiB GiB TiB)
+    if [ "$b" -lt 0 ]; then printf -- '-'; b=$(( -b )); fi
     whole=$b
     while [ "$whole" -ge 1024 ] && [ "$u" -lt 4 ]; do
         rem=$(( whole % 1024 )); whole=$(( whole / 1024 )); u=$(( u + 1 ))
@@ -234,8 +250,10 @@ usage() {
     cat <<EOF
 Usage: $PROG [options]
 
-Shrinks large SDR video files to HEVC in MKV. HDR / Dolby Vision files are
-skipped and listed in <scan dir>/$HDR_LOG_NAME.
+Shrinks large video files to HEVC in MKV. HDR10, HLG, HDR10+ and Dolby Vision
+files are tone mapped to SDR BT.709, BT.2020 SDR files are gamut mapped to
+BT.709. Files that can't be converted safely are skipped and listed in
+<scan dir>/$HDR_LOG_NAME.
 With no options an interactive settings screen opens; settings can be saved
 as named profiles.
 
@@ -261,6 +279,19 @@ Encoding
       --vaapi-device DEV   VAAPI render node (default /dev/dri/renderD128)
       --nice N             CPU niceness for ffmpeg, 0-19 (0 = normal priority)
       --set KEY=VALUE      Set any profile key (see list below)
+
+HDR
+      --hdr MODE           tonemap | skip   (default tonemap)
+                           tonemap: HDR and BT.2020 sources become SDR BT.709
+                           skip:    HDR and BT.2020 sources are logged and left alone
+      --tonemap-backend B  auto | libplacebo | zscale
+                           libplacebo: GPU through Vulkan, best quality, the only one
+                                       that handles Dolby Vision profile 5
+                           zscale:     CPU (zimg + tonemap filter), no GPU needed
+                           auto:       libplacebo if it can start, else zscale
+      --tonemap-curve C    auto | hable | mobius | reinhard | bt.2390 | spline
+                           (bt.2390 and spline are libplacebo only; auto = libplacebo's
+                           own default, or hable on zscale)
 
 Where files go
       --archive DIR        After success, move originals here (folder layout mirrored)
@@ -289,7 +320,7 @@ During a run
   kill -USR1 <pid>         Finish the current file, then stop.
 
 Files created
-  <scan dir>/$HDR_LOG_NAME   Skipped HDR / Dolby Vision files
+  <scan dir>/$HDR_LOG_NAME   HDR / BT.2020 files that were skipped
   <scan dir>/$STATE_DIR_NAME/locks/      Per-file locks, so several instances can share a library
   <scan dir>/$STATE_DIR_NAME/no-gain.list  Files that did not shrink enough (delete a line to retry)
   $LOG_DIR/  Run log and ffmpeg logs of failed files
@@ -347,7 +378,7 @@ valid_profile_name() { [[ $1 =~ ^[A-Za-z0-9._-]+$ && $1 != .* ]]; }
 # ===========================================================================
 # Option letters and long names, and which of them take a value. Long
 # options go through getopts too, as "-" with the name in OPTARG.
-LONG_WITH_VALUE=" dir min-size skip-codecs order limit encoder quality height audio audio-codec max-ratio hw-decode vaapi-device nice set archive output suffix scratch wip profile config save-profile "
+LONG_WITH_VALUE=" dir min-size skip-codecs order limit encoder quality height audio audio-codec max-ratio hw-decode vaapi-device nice hdr tonemap-backend tonemap-curve set archive output suffix scratch wip profile config save-profile "
 LONG_EMPTY_OK=" skip-codecs suffix "
 LONG_FLAGS=" 10bit 8bit delete keep dry-run yes help version "
 
@@ -401,7 +432,10 @@ parse_args() {
             hw-decode)      CLI_SET[HW_DECODE]=$OPTARG ;;
             vaapi-device)   CLI_SET[VAAPI_DEVICE]=$OPTARG ;;
             nice)           CLI_SET[NICE]=$OPTARG ;;
-            set)            [[ $OPTARG == *=* ]] || die "--set expects KEY=VALUE."
+            hdr)            CLI_SET[HDR_MODE]=$OPTARG ;;
+            tonemap-backend) CLI_SET[TONEMAP_BACKEND]=$OPTARG ;;
+            tonemap-curve)  CLI_SET[TONEMAP_CURVE]=$OPTARG ;;
+            set)           [[ $OPTARG == *=* ]] || die "--set expects KEY=VALUE."
                             is_setting_key "${OPTARG%%=*}" || die "--set: unknown key '${OPTARG%%=*}'."
                             CLI_SET[${OPTARG%%=*}]=${OPTARG#*=} ;;
             archive)        CLI_SET[ORIGINALS]=move; CLI_SET[ARCHIVE_DIR]=$OPTARG ;;
@@ -514,6 +548,10 @@ normalize_settings() {
     case $ENCODER in amd|intel) ENCODER=vaapi ;; nvenc) ENCODER=nvidia ;; x265|libx265) ENCODER=cpu ;; esac
     ORIGINALS=${ORIGINALS,,}; [ "$ORIGINALS" = archive ] && ORIGINALS=move
     AUDIO=${AUDIO,,}; AUDIO_CODEC=${AUDIO_CODEC,,}; ORDER=${ORDER,,}; HW_DECODE=${HW_DECODE,,}
+    HDR_MODE=${HDR_MODE,,}; TONEMAP_BACKEND=${TONEMAP_BACKEND,,}; TONEMAP_CURVE=${TONEMAP_CURVE,,}
+    case $HDR_MODE in tonemapping|tonemapped|convert) HDR_MODE=tonemap ;; esac
+    case $TONEMAP_BACKEND in placebo|vulkan|gpu) TONEMAP_BACKEND=libplacebo ;; zimg|cpu) TONEMAP_BACKEND=zscale ;; esac
+    case $TONEMAP_CURVE in bt2390) TONEMAP_CURVE=bt.2390 ;; esac
     SKIP_CODECS=${SKIP_CODECS,,}; SKIP_CODECS=${SKIP_CODECS// /}
     MAX_HEIGHT=${MAX_HEIGHT%[pP]}
     MAX_OUTPUT_PCT=${MAX_OUTPUT_PCT%\%}
@@ -586,6 +624,20 @@ validate_settings() {
     case $ORDER in path|largest|smallest) ;; *) verr "Order must be path, largest or smallest." ;; esac
     case $HW_DECODE in auto|off) ;; *) verr "Hardware decode must be auto or off." ;; esac
     is_int_range "$NICE" 0 19 || verr "Nice level must be 0-19."
+    case $HDR_MODE in tonemap|skip) ;; *) verr "HDR mode must be tonemap or skip." ;; esac
+    case $TONEMAP_BACKEND in
+        auto) ;;
+        libplacebo) have_filter libplacebo || verr "Tone map backend libplacebo: this ffmpeg has no libplacebo filter." ;;
+        zscale) { have_filter zscale && have_filter tonemap; } || verr "Tone map backend zscale: this ffmpeg lacks the zscale or tonemap filter (needs libzimg)." ;;
+        *) verr "Tone map backend must be auto, libplacebo or zscale." ;;
+    esac
+    case " $TONEMAP_CURVES " in
+        *" $TONEMAP_CURVE "*)
+            if [ "$TONEMAP_BACKEND" = zscale ]; then
+                case $TONEMAP_CURVE in bt.2390|spline) verr "Tone map curve $TONEMAP_CURVE needs libplacebo; zscale offers hable, mobius or reinhard." ;; esac
+            fi ;;
+        *) verr "Tone map curve must be one of: $TONEMAP_CURVES." ;;
+    esac
     case $X265_PRESET in
         ultrafast|superfast|veryfast|faster|fast|medium|slow|slower|veryslow|placebo) ;;
         *) verr "x265 preset '$X265_PRESET' is not valid." ;;
@@ -680,6 +732,18 @@ desc_audio() {
     fi
 }
 
+desc_hdr() {
+    if [ "$HDR_MODE" = skip ]; then
+        printf 'skip HDR and BT.2020 sources, list them in %s' "$HDR_LOG_NAME"
+        return 0
+    fi
+    printf 'tone map to SDR BT.709, backend %s, curve %s' "$TONEMAP_BACKEND" "$TONEMAP_CURVE"
+    if [ -n "$TM_BACKEND" ]; then
+        printf '  %s(using %s)%s' "$C_DIM" "$TM_BACKEND" "$C_RST"
+    fi
+    return 0
+}
+
 desc_originals() {
     case $ORIGINALS in
         move)   if [ -n "$ARCHIVE_DIR" ]; then printf 'move to %s' "$ARCHIVE_DIR"
@@ -714,9 +778,10 @@ draw_menu() {
     menu_item 12 "Skip codecs"     "$(opt_or_none "$SKIP_CODECS")"
     menu_item 13 "Size guard"      "$( is_int_range "$MAX_OUTPUT_PCT" 1 999999 && printf '%s\n' "abort if output reaches ${MAX_OUTPUT_PCT}% of source" || printf '%s\n' off)"
     menu_item 14 "Order"           "$ORDER"
-    menu_item 15 "Advanced"        "x265 params, presets, hw decode ($HW_DECODE), nice ($NICE), extensions"
+    menu_item 15 "HDR"             "$(desc_hdr)"
+    menu_item 16 "Advanced"        "x265 params, presets, hw decode ($HW_DECODE), nice ($NICE), extensions"
     rule
-    printf '  %sEnter%s start   %s1-15%s edit   %ss%s save profile   %sn%s dry run: %s   %sq%s quit\n' \
+    printf '  %sEnter%s start   %s1-16%s edit  %ss%s save profile   %sn%s dry run: %s   %sq%s quit\n' \
         "$C_BLD" "$C_RST" "$C_BLD" "$C_RST" "$C_BLD" "$C_RST" "$C_BLD" "$C_RST" "$dry" "$C_BLD" "$C_RST"
     if [ -n "$MENU_MSG" ]; then printf '\n%s\n' "$MENU_MSG"; MENU_MSG=""; fi
 }
@@ -739,6 +804,28 @@ edit_encoder() {
         fi
     fi
     MENU_MSG="Note: quality numbers mean different things per encoder; re-check item 4."
+}
+
+edit_hdr() {
+    local curves
+    printf '\n'
+    printf '%s\n' "    tonemap: HDR10, HLG, HDR10+ and Dolby Vision become SDR BT.709; BT.2020 SDR is gamut mapped"
+    printf '%s\n' "    skip:    those files are left alone and listed in $HDR_LOG_NAME"
+    prompt_choice "HDR sources" "$HDR_MODE" tonemap skip && HDR_MODE=$REPLY_VAL
+    [ "$HDR_MODE" = tonemap ] || return 0
+    printf '    libplacebo: %s\n' "$(have_filter libplacebo && printf 'in this ffmpeg (GPU via Vulkan, handles Dolby Vision profile 5)' || printf 'not in this ffmpeg')"
+    printf '    zscale:     %s\n' "$( { have_filter zscale && have_filter tonemap; } && printf 'in this ffmpeg (CPU)' || printf 'not in this ffmpeg (needs libzimg)')"
+    prompt_choice "Tone map backend" "$TONEMAP_BACKEND" auto libplacebo zscale && TONEMAP_BACKEND=$REPLY_VAL
+    curves=$TONEMAP_CURVES
+    if [ "$TONEMAP_BACKEND" = zscale ]; then
+        curves="auto hable mobius reinhard"
+        case $TONEMAP_CURVE in bt.2390|spline) TONEMAP_CURVE=auto ;; esac
+    fi
+    printf '%s\n' "    auto: libplacebo's own default, or hable on zscale. hable: filmic, darker. mobius: keeps more brightness."
+    # Unquoted on purpose: one choice per word
+    # shellcheck disable=SC2086
+    prompt_choice "Tone map curve" "$TONEMAP_CURVE" $curves && TONEMAP_CURVE=$REPLY_VAL
+    return 0
 }
 
 edit_advanced() {
@@ -786,7 +873,8 @@ edit_item() {
             done ;;
         13) prompt_int "Abort and keep the original if output reaches this % of source (0 = off)" "$MAX_OUTPUT_PCT" 0 100 && MAX_OUTPUT_PCT=$REPLY_VAL ;;
         14) prompt_choice "Processing order" "$ORDER" path largest smallest && ORDER=$REPLY_VAL ;;
-        15) edit_advanced ;;
+        15) edit_hdr ;;
+        16) edit_advanced ;;
         *)  MENU_MSG="No item $1." ;;
     esac
     # A prompt cut short by Ctrl+D just leaves the setting as it was
@@ -853,12 +941,196 @@ build_encoder_settings() {
     esac
 }
 
+# ===========================================================================
+# Tone mapping
+# ===========================================================================
+# Runs a one-frame PQ test clip through a filter. Catches a libplacebo that
+# is compiled in but can't get a Vulkan device, which only shows at run time.
+# Sets TM_REASON to ffmpeg's last error line on failure.
+tonemap_selftest() {
+    local vf=$1 out tmo=()
+    command -v timeout >/dev/null 2>&1 && tmo=(timeout 30)
+    if out=$(LC_ALL=C "${tmo[@]}" ffmpeg -hide_banner -nostdin -v error \
+            -f lavfi -i "color=c=gray:s=64x64:d=0.1,format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv" \
+            -vf "$vf" -frames:v 1 -f null - 2>&1); then
+        return 0
+    fi
+    # The first line naming the filter or Vulkan says the most; ffmpeg's
+    # last line is usually a generic "nothing was written"
+    TM_REASON=$(printf '%s\n' "$out" | awk '
+        { sub(/^\[[^]]* @ [^]]*\] */, "") }
+        NF && !first && /libplacebo|[Vv]ulkan|zscale|zimg|tonemap/ { first = $0 }
+        NF { last = $0 }
+        END { print (first != "" ? first : last) }')
+    [ -n "$TM_REASON" ] || TM_REASON="test run failed"
+    return 1
+}
+
+test_libplacebo() {
+    have_filter libplacebo || { TM_REASON="this ffmpeg has no libplacebo filter"; return 1; }
+    tonemap_selftest "libplacebo=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p"
+}
+
+test_zscale() {
+    { have_filter zscale && have_filter tonemap; } || { TM_REASON="this ffmpeg has no zscale/tonemap filter (needs libzimg)"; return 1; }
+    tonemap_selftest "zscale=tin=smpte2084:min=bt2020nc:pin=bt2020:rin=tv:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+}
+
+# Picks the backend for this run and builds the pieces every converted file
+# shares. Leaves TM_BACKEND empty (with TM_REASON) when nothing works.
+resolve_tonemap() {
+    local why_pl="" t names=()
+    TM_BACKEND=""; TM_REASON=""; TM_CURVE=""; TM_STRIP=""; ENC_HDR_ARGS=()
+    [ "$HDR_MODE" = tonemap ] || return 0
+
+    case $TONEMAP_BACKEND in
+        libplacebo)
+            test_libplacebo || die "Tone map backend libplacebo cannot start: $TM_REASON"
+            TM_BACKEND=libplacebo ;;
+        zscale)
+            test_zscale || die "Tone map backend zscale cannot run: $TM_REASON"
+            TM_BACKEND=zscale ;;
+        auto)
+            if test_libplacebo; then
+                TM_BACKEND=libplacebo
+            else
+                why_pl=$TM_REASON
+                if test_zscale; then
+                    TM_BACKEND=zscale
+                    warn "libplacebo is not usable ($why_pl). Tone mapping on the CPU with zscale instead; Dolby Vision profile 5 files will be skipped."
+                else
+                    TM_REASON="libplacebo: $why_pl; zscale: $TM_REASON"
+                    warn "No tone mapping filter works in this ffmpeg ($TM_REASON). HDR files will be skipped and logged."
+                    return 0
+                fi
+            fi ;;
+    esac
+
+    TM_CURVE=$TONEMAP_CURVE
+    if [ "$TM_BACKEND" = zscale ]; then
+        case $TM_CURVE in
+            auto) TM_CURVE=hable ;;
+            bt.2390|spline) warn "Curve $TM_CURVE needs libplacebo; using hable with zscale."; TM_CURVE=hable ;;
+        esac
+    fi
+
+    # Drop HDR frame metadata after conversion so no encoder writes HDR SEI
+    # into an SDR stream. Only names this ffmpeg's sidedata filter knows are
+    # used, since an unknown name stops the whole filter graph.
+    if have_filter sidedata; then
+        mapfile -t names < <(LC_ALL=C ffmpeg -hide_banner -h filter=sidedata 2>/dev/null \
+            | awk '$1 ~ /^(MASTERING_DISPLAY_METADATA|CONTENT_LIGHT_LEVEL|DYNAMIC_HDR_PLUS|DYNAMIC_HDR_VIVID|DOVI_RPU_BUFFER|DOVI_METADATA)$/ { print $1 }' \
+            | sort -u)
+        for t in "${names[@]}"; do TM_STRIP+=",sidedata=mode=delete:type=$t"; done
+    fi
+    # Newer ffmpeg can write a Dolby Vision RPU from libx265; never for SDR output
+    if LC_ALL=C ffmpeg -hide_banner -h "encoder=$(enc_name)" 2>/dev/null | awk '$1 == "-dolbyvision" { f = 1 } END { exit !f }'; then
+        ENC_HDR_ARGS=(-dolbyvision:v 0)
+    fi
+    return 0
+}
+
+# Picks a value off a whitelist of names zscale understands, else a default
+pick_name() {
+    local v=$1 def=$2 ok
+    shift 2
+    for ok in "$@"; do [ "$v" = "$ok" ] && { printf '%s' "$v"; return 0; }; done
+    printf '%s' "$def"
+}
+
+# Decides what happens to an HDR / BT.2020 file. Sets HDR_CONVERT=1, or
+# HDR_SKIP_WHY with the reason it can't be converted.
+hdr_decide() {
+    HDR_CONVERT=0; HDR_SKIP_WHY=""
+    [ -n "$PR_KIND" ] || return 0
+    if [ "$HDR_MODE" = skip ]; then
+        HDR_SKIP_WHY="HDR mode is skip"
+    elif [ "$PR_KIND" = unsure ]; then
+        HDR_SKIP_WHY="BT.2020 with no transfer tag, could be HDR or SDR, check it by hand"
+    elif [ -z "$TM_BACKEND" ]; then
+        HDR_SKIP_WHY="no working tone mapping filter ($TM_REASON)"
+    elif [ "$PR_KIND" = dv-rpu ] && [ "$TM_BACKEND" != libplacebo ]; then
+        HDR_SKIP_WHY="needs the libplacebo backend, zscale would get the colours wrong"
+    else
+        HDR_CONVERT=1
+    fi
+    return 0
+}
+
+# Builds TM_VF: scaling + conversion to SDR BT.709, ending in software
+# frames of format $SW_FMT. $1 = output height (number, quoted expression,
+# or empty for no scaling).
+build_tonemap_vf() {
+    local h=$1 planar=yuv420p vf="" opts tin min pin rin
+    [ "$BIT_DEPTH" -eq 10 ] && planar=yuv420p10le
+
+    if [ "$TM_BACKEND" = libplacebo ]; then
+        # libplacebo reads the colour tags, HDR10/HDR10+ metadata and the
+        # Dolby Vision RPU from the frames itself, and scales on the GPU too
+        opts=""
+        [ -n "$h" ] && opts="w=-2:h=$h:"
+        opts+="colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=$planar"
+        [ "$TM_CURVE" != auto ] && opts+=":tonemapping=$TM_CURVE"
+        vf="libplacebo=$opts"
+    else
+        # zscale needs the input described exactly, or it refuses to convert.
+        # Scaling first keeps the float RGB stage at the small output size.
+        tin=$(pick_name "$PR_TRC" bt709 smpte2084 arib-std-b67 bt709 bt2020-10 bt2020-12 smpte170m bt470bg bt470m smpte240m iec61966-2-1)
+        min=$(pick_name "$PR_SPACE" bt2020nc bt2020nc bt2020c bt709 bt470bg smpte170m smpte240m fcc ycgco)
+        pin=$(pick_name "$PR_PRIM" bt2020 bt2020 bt709 bt470m bt470bg smpte170m smpte240m film smpte431 smpte432)
+        rin=$(pick_name "$PR_RANGE" tv tv pc)
+        [ -n "$h" ] && vf="scale=w=-2:h=$h,"
+        vf+="zscale=tin=$tin:min=$min:pin=$pin:rin=$rin:"
+        if [ "$PR_KIND" = gamut ]; then
+            # SDR already: only the primaries and matrix change
+            vf+="t=bt709:m=bt709:p=bt709:r=tv:d=error_diffusion,format=$planar"
+        else
+            vf+="t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=$TM_CURVE:desat=0,"
+            vf+="zscale=t=bt709:m=bt709:r=tv:d=error_diffusion,format=$planar"
+        fi
+    fi
+    [ "$planar" != "$SW_FMT" ] && vf+=",format=$SW_FMT"
+    TM_VF="$vf$TM_STRIP"
+}
+
+tonemap_desc() {
+    case $PR_KIND in
+        gamut) printf 'gamut mapped to BT.709 with %s' "$TM_BACKEND" ;;
+        *)     printf 'tone mapped to SDR BT.709 with %s, curve %s' "$TM_BACKEND" "$TM_CURVE" ;;
+    esac
+}
+
 # Sets PRE_INPUT (options before -i) and VF for one attempt.
 # $1 = cpu | gpu | sw     $2 = output height, or empty for no scaling
+# With HDR_CONVERT set, the frames go through TM_VF in system memory: the
+# GPU attempt decodes on the GPU and lets ffmpeg download the frames, since
+# the GPU scalers can't tone map (libplacebo still runs on the GPU).
 PRE_INPUT=(); VF=""
 video_pipeline() {
     local mode=$1 h=$2 sc=""
     PRE_INPUT=()
+    if [ "$HDR_CONVERT" -ne 0 ]; then
+        build_tonemap_vf "$h"
+        case $mode in
+            cpu) VF=$TM_VF ;;
+            gpu)
+                if [ "$ENCODER" = nvidia ]; then
+                    PRE_INPUT=(-hwaccel cuda)
+                    VF=$TM_VF
+                else
+                    PRE_INPUT=(-init_hw_device "vaapi=va:$VAAPI_DEVICE" -hwaccel vaapi -hwaccel_device va -filter_hw_device va)
+                    VF="$TM_VF,hwupload"
+                fi ;;
+            sw)
+                if [ "$ENCODER" = nvidia ]; then
+                    VF=$TM_VF
+                else
+                    PRE_INPUT=(-vaapi_device "$VAAPI_DEVICE")
+                    VF="$TM_VF,hwupload"
+                fi ;;
+        esac
+        return 0
+    fi
     case $mode in
         cpu)
             [ -n "$h" ] && sc="scale=w=-2:h=$h,"
@@ -900,6 +1172,7 @@ probe_file() {
     P=()
     PR_SI=""; PR_VIDX=""; PR_VCODEC=""; PR_W=""; PR_H=""; PR_PIXFMT=""
     PR_TRC=""; PR_PRIM=""; PR_SPACE=""; PR_RANGE=""; PR_HDR=""; PR_MARKER=""; PR_DUR_US=0
+    PR_KIND=""
     out=$(ffprobe -v error -analyzeduration 100M -probesize 100M \
           -show_streams -show_format -of flat -i "$f" 2>/dev/null) || return 1
     [ -n "$out" ] || return 1
@@ -938,17 +1211,41 @@ probe_file() {
 
     # HDR / Dolby Vision detection. DV profile 5 often has no PQ transfer tag,
     # so the DOVI configuration record and dvh1/dvhe tags are checked too.
-    local dv=0
+    # A DV stream whose base layer is HDR10 or HLG (profiles 7, 8.1, 8.4) can
+    # be tone mapped from that base layer by any backend. Profile 5 has no
+    # such base layer (compatibility id 0): only the RPU gives correct
+    # colours, and only libplacebo applies it.
+    local dv=0 compat="" hdr10p=0
     for k in "${!P[@]}"; do
         case $k in
-            streams.stream.*.side_data_type) [[ ${P[$k]} == *DOVI* || ${P[$k]} == *"Dolby Vision"* ]] && dv=1 ;;
+            streams.stream.*.side_data_type)
+                [[ ${P[$k]} == *DOVI* || ${P[$k]} == *"Dolby Vision"* ]] && dv=1
+                [[ ${P[$k]} == *"HDR10+"* || ${P[$k]} == *"SMPTE2094-40"* ]] && hdr10p=1 ;;
             streams.stream.*.codec_tag_string) [[ ${P[$k]} =~ ^(dvh1|dvhe|dva1|dvav)$ ]] && dv=1 ;;
+            "$s".side_data_list.*.dv_bl_signal_compatibility_id) compat=${P[$k]} ;;
         esac
     done
-    if [ "$dv" -ne 0 ]; then PR_HDR="Dolby Vision"
-    elif [ "$PR_TRC" = smpte2084 ]; then PR_HDR="HDR10 / PQ (smpte2084)"
-    elif [ "$PR_TRC" = arib-std-b67 ]; then PR_HDR="HLG (arib-std-b67)"
-    elif [ "$PR_PRIM" = bt2020 ]; then PR_HDR="BT.2020 colour without an HDR transfer tag (check manually)"
+    local base_ok=0
+    case $PR_TRC in smpte2084|arib-std-b67) base_ok=1 ;; esac
+    if [ "$dv" -ne 0 ]; then
+        if [ "$base_ok" -eq 0 ] || [ "$compat" = 0 ]; then
+            PR_HDR="Dolby Vision, no HDR10/HLG base layer (e.g. profile 5)"; PR_KIND="dv-rpu"
+        elif [ "$PR_TRC" = arib-std-b67 ]; then
+            PR_HDR="Dolby Vision with HLG base layer"; PR_KIND=hlg
+        else
+            PR_HDR="Dolby Vision with HDR10 base layer"; PR_KIND=pq
+        fi
+    elif [ "$PR_TRC" = smpte2084 ]; then
+        if [ "$hdr10p" -ne 0 ]; then PR_HDR="HDR10+ / PQ (smpte2084)"; else PR_HDR="HDR10 / PQ (smpte2084)"; fi
+        PR_KIND=pq
+    elif [ "$PR_TRC" = arib-std-b67 ]; then
+        PR_HDR="HLG (arib-std-b67)"; PR_KIND=hlg
+    elif [ "$PR_PRIM" = bt2020 ]; then
+        if known "$PR_TRC"; then
+            PR_HDR="BT.2020 SDR, transfer $PR_TRC"; PR_KIND=gamut
+        else
+            PR_HDR="BT.2020 colour with no transfer tag"; PR_KIND=unsure
+        fi
     fi
     return 0
 }
@@ -967,12 +1264,14 @@ is_lossless_audio() {
     return 1
 }
 
-# Builds MAP_ARGS for all non-video streams and plan summaries.
+# Builds MAP_ARGS for all non-video streams and plan summaries. The video
+# map comes from the encode loop, since a converted file maps a filter
+# output instead of the input stream. Output stream 0 is always the video.
 MAP_ARGS=(); PLAN_AUDIO=""; PLAN_SUBS=""
 build_stream_args() {
     local i=0 oi=1 idx type codec ch br a_copy=0 a_enc=0 s_copy=0 s_conv=0 att=0
     local enc_from=() dropped=()
-    MAP_ARGS=(-map "0:$PR_VIDX")
+    MAP_ARGS=()
     while [ -n "${P[streams.stream.$i.index]:-}" ]; do
         idx=${P[streams.stream.$i.index]}
         type=${P[streams.stream.$i.codec_type]:-}
@@ -1036,6 +1335,10 @@ COLOR_ARGS=()
 known() { [ -n "$1" ] && [ "$1" != unknown ] && [ "$1" != reserved ]; }
 build_color_args() {
     COLOR_ARGS=()
+    if [ "$HDR_CONVERT" -ne 0 ]; then
+        COLOR_ARGS=(-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv)
+        return 0
+    fi
     if known "$PR_PRIM" || known "$PR_TRC" || known "$PR_SPACE"; then
         known "$PR_PRIM"  && COLOR_ARGS+=(-color_primaries "$PR_PRIM")
         known "$PR_TRC"   && COLOR_ARGS+=(-color_trc "$PR_TRC")
@@ -1183,7 +1486,8 @@ log_hdr() {
     if [ ! -f "$HDR_LOG" ]; then
         {
             printf '# HDR videos log, created %s\n' "$(date)"
-            printf '# These files are HDR / Dolby Vision and were skipped. Convert them manually (e.g. HandBrake).\n\n'
+            printf '# These HDR / Dolby Vision / BT.2020 files were skipped. The run log says why for each.\n'
+            printf '# Convert them by hand (e.g. HandBrake), or fix the cause and run again.\n\n'
         } > "$HDR_LOG" 2>/dev/null || return 0
     fi
     if ! grep -qxF -- "$1" "$HDR_LOG" 2>/dev/null; then
@@ -1207,6 +1511,25 @@ verify_output() {
             return 1
         fi
     fi
+    [ "$HDR_CONVERT" -ne 0 ] && { verify_sdr "$f" || return 1; }
+    return 0
+}
+
+# A converted file must come out tagged BT.709 with no HDR or Dolby Vision
+# metadata left in the container or the first frame, or players would treat
+# SDR pixels as HDR. Checked here so a bad output never replaces a source.
+verify_sdr() {
+    local f=$1 out trc
+    out=$(ffprobe -v error -select_streams v:0 -show_streams -of flat -i "$f" 2>/dev/null) \
+        || { VERIFY_MSG="output cannot be read by ffprobe"; return 1; }
+    out+=$'\n'$(ffprobe -v error -select_streams v:0 -read_intervals '%+#1' -show_frames -of flat -i "$f" 2>/dev/null || true)
+    trc=$(sed -n 's/^streams\.stream\.0\.color_transfer="\(.*\)"$/\1/p' <<< "$out")
+    if [ "$trc" != bt709 ]; then
+        VERIFY_MSG="converted output is tagged transfer '${trc:-none}', not bt709"; return 1
+    fi
+    if grep -qiE 'side_data_type="[^"]*(Mastering display|Content light level|DOVI|Dolby Vision|HDR Dynamic|HDR10)' <<< "$out"; then
+        VERIFY_MSG="converted output still carries HDR / Dolby Vision metadata"; return 1
+    fi
     return 0
 }
 
@@ -1215,8 +1538,7 @@ mark() {
     case $cat in
         done)   CNT_DONE=$(( CNT_DONE + 1 ));     printf '  %sDone:%s %s\n' "$C_GRN" "$C_RST" "$*" ;;
         dry)    CNT_DRY=$(( CNT_DRY + 1 ));       printf '  %s[dry run]%s %s\n' "$C_CYN" "$C_RST" "$*" ;;
-        hdr)    CNT_HDR=$(( CNT_HDR + 1 ));       printf '  %sSkipped, HDR:%s %s\n' "$C_YEL" "$C_RST" "$*" ;;
-        skip)   CNT_SKIP=$(( CNT_SKIP + 1 ));     printf '  %sSkipped:%s %s\n' "$C_YEL" "$C_RST" "$*" ;;
+        hdr)    CNT_HDR=$(( CNT_HDR + 1 ));       printf '  %sSkipped, HDR:%s %s\n' "$C_YEL" "$C_RST" "$*" ;;        skip)   CNT_SKIP=$(( CNT_SKIP + 1 ));     printf '  %sSkipped:%s %s\n' "$C_YEL" "$C_RST" "$*" ;;
         nogain) CNT_NOGAIN=$(( CNT_NOGAIN + 1 )); printf '  %sNot worth it:%s %s\n' "$C_YEL" "$C_RST" "$*" ;;
         fail)   CNT_FAIL=$(( CNT_FAIL + 1 ));     printf '  %sFAILED:%s %s\n' "$C_RED" "$C_RST" "$*" >&2
                 FAILED_FILES+=("$CUR_REL: $*") ;;
@@ -1259,9 +1581,10 @@ process_one() {
     [ -n "$PR_MARKER" ] && { mark skip "already transcoded by this script ($PR_MARKER)"; return; }
     [ -n "$PR_VIDX" ]   || { mark skip "no video stream"; return; }
 
-    if [ -n "$PR_HDR" ]; then
+    hdr_decide
+    if [ -n "$HDR_SKIP_WHY" ]; then
         [ "$DRY_RUN" -ne 0 ] || log_hdr "$src"
-        mark hdr "$PR_HDR"; return
+        mark hdr "$PR_HDR: $HDR_SKIP_WHY"; return
     fi
     if [[ -n $SKIP_CODECS && ",$SKIP_CODECS," == *",$PR_VCODEC,"* ]]; then
         mark skip "video is already $PR_VCODEC"; return
@@ -1304,8 +1627,17 @@ process_one() {
 
     printf '  Video : %s %sx%s %s -> HEVC %s, %s-bit, %s %s\n' "$PR_VCODEC" "${PR_W:-?}" "${PR_H:-?}" \
         "${PR_PIXFMT:-}" "$res_desc" "$BIT_DEPTH" "$(quality_label)" "$QUALITY"
+    [ "$HDR_CONVERT" -ne 0 ] && printf '  HDR   : %s, %s\n' "$PR_HDR" "$(tonemap_desc)"
     printf '  Audio : %s\n' "$PLAN_AUDIO"
     printf '  Subs  : %s\n' "$PLAN_SUBS"
+
+    # The RPU of a Dolby Vision file with no usable base layer is read from
+    # the bitstream; CPU decode is the path where that is certain to work
+    local attempts=("${ATTEMPTS[@]}") a
+    if [ "$PR_KIND" = dv-rpu ]; then
+        attempts=()
+        for a in "${ATTEMPTS[@]}"; do [ "$a" = gpu ] || attempts+=("$a"); done
+    fi
 
     if [ "$DRY_RUN" -ne 0 ]; then
         printf '  Output: %s\n' "$final_path"
@@ -1315,6 +1647,7 @@ process_one() {
             delete) printf '  Then  : delete original\n' ;;
             keep)   printf '  Then  : keep original\n' ;;
         esac
+        [ "$HDR_CONVERT" -ne 0 ] && CNT_TM=$(( CNT_TM + 1 ))
         mark dry "would transcode"
         return
     fi
@@ -1362,21 +1695,34 @@ process_one() {
     local fs_args=()
     [ "$limit" -gt 0 ] && fs_args=(-fs "$limit")
     local marker
-    marker="v$VERSION $(enc_name) $(quality_label)=$QUALITY height=${out_h:-source} $(date +%F)"
+    marker="v$VERSION $(enc_name) $(quality_label)=$QUALITY height=${out_h:-source}"
+    [ "$HDR_CONVERT" -ne 0 ] && marker+=" sdr=$TM_BACKEND"
+    marker+=" $(date +%F)"
 
     CUR_PARTS=("$encode_path")
     [ "$encode_path" != "$stage_path" ] && CUR_PARTS+=("$stage_path")
 
-    local attempt rc=1 t0=$SECONDS cmd=() n_att=0
-    for attempt in "${ATTEMPTS[@]}"; do
+    local attempt rc=1 t0=$SECONDS cmd=() n_att=0 vid_args=() enc_extra=()
+    for attempt in "${attempts[@]}"; do
         n_att=$(( n_att + 1 ))
         video_pipeline "$attempt" "$out_h"
+        if [ "$HDR_CONVERT" -ne 0 ]; then
+            # A filter_complex output has no input stream behind it, so ffmpeg
+            # can't copy the source's HDR / Dolby Vision stream metadata onto
+            # the SDR output (which it does with -vf, at least up to 6.1)
+            vid_args=(-filter_complex "[0:$PR_VIDX]${VF}[vout]" -map "[vout]")
+            enc_extra=("${ENC_HDR_ARGS[@]}")
+        else
+            vid_args=(-map "0:$PR_VIDX" -vf "$VF")
+            enc_extra=()
+        fi
         cmd=( "${NICE_PREFIX[@]}" ffmpeg -hide_banner -nostdin -y
               -analyzeduration 100M -probesize 100M
               "${PRE_INPUT[@]}"
               -i "$input"
+              "${vid_args[@]}"
               "${MAP_ARGS[@]}"
-              "${VIDEO_ENC[@]}" -vf "$VF"
+              "${VIDEO_ENC[@]}" "${enc_extra[@]}"
               "${COLOR_ARGS[@]}"
               -map_metadata 0 -map_chapters 0
               -metadata "$MARKER_TAG=$marker"
@@ -1474,6 +1820,7 @@ process_one() {
     rm -f -- "$ff_log"
     BYTES_IN=$(( BYTES_IN + size )); BYTES_OUT=$(( BYTES_OUT + out_size ))
     local pct=$(( size > 0 ? out_size * 100 / size : 0 ))
+    [ "$HDR_CONVERT" -ne 0 ] && CNT_TM=$(( CNT_TM + 1 ))
     mark "done" "$(fmt_size "$size") -> $(fmt_size "$out_size") (${pct}%) in $(fmt_hms "$elapsed"); $ORIG_MSG"
 }
 
@@ -1505,6 +1852,7 @@ prepare_run() {
     fi
 
     build_encoder_settings
+    resolve_tonemap
 
     [ "$ENCODER" = nvidia ] && ! nvidia_present && warn "No NVIDIA device detected; hevc_nvenc will probably fail."
     if [ "$ENCODER" != cpu ] && [ "$HW_DECODE" = auto ] && [ "${ATTEMPTS[0]}" = sw ]; then
@@ -1576,6 +1924,13 @@ print_header() {
     printf '  Candidates   : %d file(s) over %s GiB, %s total\n' "$TOTAL" "$MIN_SIZE_GB" "$(fmt_size "$total_bytes")"
     printf '  Encoder      : %s, %s %s, %s-bit, max height %s\n' "$(enc_name)" "$(quality_label)" "$QUALITY" "$BIT_DEPTH" \
         "$( [ "$(( 10#$MAX_HEIGHT ))" -gt 0 ] && printf '%s\n' "${MAX_HEIGHT}p" || printf '%s\n' source)"
+    if [ "$HDR_MODE" = skip ]; then
+        printf '  HDR          : skip and log\n'
+    elif [ -n "$TM_BACKEND" ]; then
+        printf '  HDR          : to SDR BT.709 with %s, curve %s\n' "$TM_BACKEND" "$TM_CURVE"
+    else
+        printf '  HDR          : %sskip and log, no working tone mapping filter%s\n' "$C_YEL" "$C_RST"
+    fi
     printf '  Originals    : %s\n' "$(desc_originals)"
     printf '  Output       : %s\n' "$(desc_output)"
     [ -n "$SCRATCH_DIR" ] && printf '  Scratch      : %s\n' "$SCRATCH_DIR"
@@ -1605,6 +1960,7 @@ print_summary() {
         fi
         printf '\n'
     fi
+    [ "$CNT_TM" -gt 0 ] && printf '    of which to SDR  : %d\n' "$CNT_TM"
     printf '  Skipped, HDR       : %d\n' "$CNT_HDR"
     [ "$DRY_RUN" -ne 0 ] || printf '  Did not shrink     : %d\n' "$CNT_NOGAIN"
     printf '  Skipped, other     : %d\n' "$CNT_SKIP"
@@ -1613,7 +1969,7 @@ print_summary() {
     [ "$CNT_HDR" -gt 0 ] && [ "$DRY_RUN" -eq 0 ] && printf '  HDR log            : %s\n' "$HDR_LOG"
     [ "$DRY_RUN" -ne 0 ] && printf '  %s*** DRY RUN: nothing was changed ***%s\n' "$C_YEL" "$C_RST"
     rule
-    log "run finished: done=$CNT_DONE hdr=$CNT_HDR nogain=$CNT_NOGAIN skipped=$CNT_SKIP failed=$CNT_FAIL saved=$(( BYTES_IN - BYTES_OUT ))"
+    log "run finished: done=$CNT_DONE tonemapped=$CNT_TM hdr_skipped=$CNT_HDR nogain=$CNT_NOGAIN skipped=$CNT_SKIP failed=$CNT_FAIL saved=$(( BYTES_IN - BYTES_OUT ))"
 }
 
 # shellcheck disable=SC2317,SC2329  # invoked via trap
