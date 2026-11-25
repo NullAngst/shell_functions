@@ -29,9 +29,11 @@ Usage: $prog [OPTIONS] TARGET
 Archive and encrypt/decrypt folders using GPG symmetric AES-256 encryption.
 
 Options:
-  -h, -H    Show this help message and exit
-  -D        Decrypt the target
-  -R        Bulk mode: operate on the contents of the target folder rather than the folder itself
+  -h, --help       Show this help message and exit
+  -D, --decrypt    Decrypt the target
+  -R, --bulk       Bulk mode: operate on the contents of the target folder rather than the folder itself
+
+Nothing existing is overwritten. Asks before deleting sources.
 
 Examples:
   Encrypt a single folder:
@@ -106,6 +108,8 @@ decrypt_file() {
 
     # Decrypt fully before extracting: gpg only reports a bad passphrase or a
     # tampered file at the very end, and a half-extracted tree is worse than none.
+    # The temp file goes next to the archive rather than in $TMPDIR, since a
+    # big folder may not fit in a RAM-backed /tmp.
     if ! tmp_tar="$(mktemp "$parent_dir/.folder_encrypt.XXXXXX")"; then
         err "cannot create a temporary file in \"$parent_dir\""
         return 1
@@ -175,12 +179,20 @@ main() {
         exit 1
     fi
 
-    while getopts ':DRhH' opt; do
+    while getopts ':DRhH-:' opt; do
         case "$opt" in
             D) mode=decrypt ;;
             R) bulk=1 ;;
             h|H) show_help; exit 0 ;;
-            *) err "invalid option -$OPTARG"; show_help >&2; exit 1 ;;
+            -)
+                case "$OPTARG" in
+                    help) show_help; exit 0 ;;
+                    decrypt) mode=decrypt ;;
+                    bulk) bulk=1 ;;
+                    *) err "unknown option --$OPTARG"; show_help >&2; exit 1 ;;
+                esac
+                ;;
+            *) err "unknown option -$OPTARG"; show_help >&2; exit 1 ;;
         esac
     done
     shift $((OPTIND - 1))
@@ -197,6 +209,17 @@ main() {
         err "target \"$target\" does not exist"
         exit 1
     fi
+    # An absolute path makes "." and ".." work: the archive is named after the
+    # folder and lands next to it, not inside it
+    if [ -d "$target" ]; then
+        target="$(cd -P -- "$target" && pwd -P)"
+    else
+        target="$(cd -P -- "$(dirname -- "$target")" && pwd -P)/${target##*/}"
+    fi
+    if [ "$target" = "/" ]; then
+        err "refusing to work on /"
+        exit 1
+    fi
 
     # gpg's terminal passphrase prompt needs to know the tty, and stdin is a
     # pipe from tar by the time gpg runs
@@ -206,7 +229,7 @@ main() {
     fi
 
     trap cleanup EXIT
-    trap 'exit 130' INT TERM
+    trap 'exit 130' INT TERM HUP
 
     if [ "$mode" = encrypt ]; then
         if [ ! -d "$target" ]; then

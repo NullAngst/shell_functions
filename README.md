@@ -4,13 +4,19 @@ A set of Bash scripts for everyday terminal work on Linux (moving files, extract
 
 ## How it works
 
-Every `.sh` file in this repo is a standalone script with a `#!/usr/bin/env bash` shebang. You copy them into one directory, then symlink each one onto your `PATH` under its command name, so `vmv.sh` becomes `vmv`. Since they always run under bash via the shebang, your interactive shell doesn't matter. Zsh users install them exactly like Bash users do.
+Every `.sh` file in this repo is a standalone script with a `#!/usr/bin/env bash` shebang. They get copied into one directory, and each one is symlinked onto your `PATH` under its command name, so `vmv.sh` becomes `vmv`. Since they always run under bash via the shebang, your interactive shell doesn't matter. Zsh users install them exactly like Bash users do.
 
-Every script runs in strict mode (`set -euo pipefail`), checks for the tools it needs before doing anything, and tells you which ones are missing. None of them can be `source`d. If you try, they refuse and leave your shell alone, since strict mode and `exit` would otherwise leak into it.
+Every script:
 
-One file can provide more than one command. `audio_convert_functions.sh` declares `# COMMANDS: 2mp3 2flac 2ogg` in its header, so the install step makes three symlinks to it and the script picks what to do from the name it was called by. Running it as `./audio_convert_functions.sh` directly isn't valid, use one of the three names.
+- runs in strict mode (`set -euo pipefail`)
+- checks for the tools it needs before doing anything and names the missing ones
+- takes `-h` or `--help`
+- sticks to portable bash 4.4+ and POSIX tool flags, so it runs on any distro, not only GNU userlands
+- refuses to be `source`d, since strict mode and `exit` would leak into your shell
 
-Every command below is the file name without `.sh`, unless the file has a `COMMANDS:` line. File names use underscores, never hyphens.
+One file can provide more than one command. `audio_convert_functions.sh` declares `# COMMANDS: 2mp3 2flac 2ogg` in its header, so the install step makes three symlinks to it and the script picks what to do from the name it was called by. Running `./audio_convert_functions.sh` directly isn't valid, use one of the three names.
+
+Every command is the file name without `.sh`, unless the file has a `COMMANDS:` line. File names use underscores, never hyphens.
 
 ## File commands
 
@@ -18,13 +24,13 @@ Every command below is the file name without `.sh`, unless the file has a `COMMA
 |---|---|---|---|
 | `vmv.sh` | `vmv` | Verbose move via `rsync`. Removes source files as they transfer, then deletes source directories left empty. `vmv <src> [src...] <dest>` | `rsync` |
 | `vcp.sh` | `vcp` | Verbose copy via `rsync`, skipping files that already exist at the destination. `vcp <src> [src...] <dest>` | `rsync` |
-| `unpack.sh` | `unpack` | Recursively extracts archives into their own directory, including archives inside archives, then deletes the source on success. Handles tar, tar.gz/tgz, tar.bz2/tbz2/tbz, tar.xz/txz, tar.zst/tzst, zip, rar, 7z, bare gz/bz2/xz/zst, and split sets (`.partN.rar`, `.rNN`, `.zNN`, `.zip.NNN`, `.7z.NNN`, `name.tar.001`). `-k` keeps sources, `-n` is a dry run, `-v` shows extractor output, `-d N` caps nesting depth (default 8). | `tar`, plus `gzip`/`bzip2`/`xz`/`zstd`, `unrar` or `7z`, and `7z`/`7zz`/`7za`, only for the formats it actually hits |
+| `unpack.sh` | `unpack` | Extracts archives into a folder of their own, then deletes the source on success. Everything that comes out is searched, subfolders included, for archives inside archives. Handles tar, tar.gz/tgz, tar.bz2/tbz2/tbz, tar.xz/txz, tar.zst/tzst, zip, rar, 7z, bare gz/bz2/xz/zst, and split sets (`.partN.rar`, `.rNN`, `.zNN`, `.zip.NNN`, `.7z.NNN`, `name.tar.001`). Given a directory it unpacks the archives directly inside it, `-r` searches its subfolders too. `-k` keeps sources, `-n` is a dry run, `-v` shows extractor output, `-d N` caps nesting depth (default 8). | `tar`, plus `gzip`/`bzip2`/`xz`/`zstd`, `unrar` or `7z`, and `7z`/`7zz`/`7za`, only for the formats it actually hits |
 | `scrmgr.sh` | `scrmgr` | One entry point for GNU `screen`: `scrmgr start <name>`, `resume <name>`, `kill <name>`, `list`, `wipe`. | `screen` |
 | `moveav.sh` | `moveav` | Sorts files into `images/`, `videos/`, and `audio/` subfolders by extension. `moveav [-R] [dir]`, `-R` sorts each subdirectory on its own. A name that's already taken gets a `_1`, `_2`, ... suffix instead of being overwritten. | nothing extra |
 | `shredfile.sh` | `shredfile` | `shred -vzu` on one file after a confirmation prompt. | `shred` (coreutils) |
-| `shredfolder.sh` | `shredfolder` | `shred -vzu` on every file in a directory, then removes the directory, after a confirmation prompt. | `shred` (coreutils) |
-| `ffile.sh` | `ffile` | Forensic file analysis: stat, md5/sha1/sha256/sha512/b2 checksums, lsattr, getfattr, getfacl, lsof, package ownership, hex header and tail, printable strings, exiftool metadata, binwalk signatures, byte entropy. A missing optional tool just means less output. | optional: `exiftool`, `binwalk`, `xxd` or `hexdump`, `strings`, `getfattr`, `getfacl`, `lsof`, `ent` or `python3` |
-| `cleandir.sh` | `cleandir` | Removes empty directories in the current directory. `-r` recurses. | nothing extra |
+| `shredfolder.sh` | `shredfolder` | `shred -vzu` on every file in a directory, then removes the directory, after a confirmation prompt. If any file fails to shred, the directory stays so you can see what's left. | `shred` (coreutils) |
+| `ffile.sh` | `ffile` | Forensic file report: stat, md5/sha1/sha256/sha512/b2 checksums, lsattr, getfattr, getfacl, lsof, package ownership, hex header and tail, printable strings, exiftool metadata, binwalk signatures, byte entropy. A missing optional tool just means less output. | `file`, `stat`, `md5sum`, `du`, `od`, `dd`; optional: `exiftool`, `binwalk`, `xxd` or `hexdump`, `strings`, `getfattr`, `getfacl`, `lsof`, `ent` or `python3` |
+| `cleandir.sh` | `cleandir` | Removes empty directories. `cleandir [-r] [dir]`, current directory by default, `-r` recurses. | nothing extra |
 | `audio_convert_functions.sh` | `2mp3`, `2flac`, `2ogg` | Converts audio with `ffmpeg`. A file converts next to itself. A directory batch-converts every audio file directly inside it (not recursive) into a `converted/` subfolder, skipping files already in the target format and never overwriting output. `-v` uses the top VBR mode for MP3/OGG instead of a fixed bitrate; FLAC ignores it. Cover art is kept for MP3 and FLAC. | `ffmpeg` |
 | `funchelp.sh` | `funchelp` | Prints a summary of every command in this set and the aliases from the bundled rc files. | nothing extra |
 
@@ -34,41 +40,41 @@ A heads up on `shredfile` and `shredfolder`: `shred` does not reliably wipe data
 
 | File | Command | What it does | Needs |
 |---|---|---|---|
-| `decode.sh` | `decode` | Prints every plausible decoding of one string: base64 (standard and URL-safe), base32, base85/Z85, hex, octal, decimal, binary, URL/percent, ROT13, ROT47, Atbash, HTML entities, and all 25 Caesar shifts. Schemes that don't fit are left blank. `decode '<string>'` | `basenc` (coreutils 8.31+) for Z85 |
+| `decode.sh` | `decode` | Prints every plausible decoding of one string: base64 (standard and URL-safe), base32, base85/Z85, hex, octal, decimal, binary, URL/percent, ROT13, ROT47, Atbash, HTML entities, and all 25 Caesar shifts. Schemes that don't fit are left blank. `decode '<string>'`, or `decode -- '<string>'` when it starts with `-`. On a terminal, control bytes in the output show as dots, so a decoded escape sequence can't mess with your terminal. | `basenc` (coreutils 8.31+) for Z85 |
 | `file_encrypt.sh` | `file_encrypt` | GPG symmetric AES-256. `file_encrypt FILE` encrypts, `file_encrypt -D FILE.gpg` decrypts. Never writes over an existing file. Asks before deleting the source afterward. | `gpg` |
-| `folder_encrypt.sh` | `folder_encrypt` | Tars and GPG-encrypts a folder, `-D` reverses it. Encryption streams tar straight into gpg, so no unencrypted archive touches the disk. `-R` is bulk mode: every subdirectory of the target is handled on its own (or every `.gpg` inside it, with `-D`), and loose files in the target get moved into `loose_files/` first so they aren't left out. Asks before deleting sources, and won't extract on top of a folder that already exists. | `gpg`, `tar` |
-| `pw_manager.sh` | `pw_manager` | Menu-driven password manager. Vaults are GPG-encrypted tar archives (`.gpg` single password, `.gpg2` two-layer, two passwords), unpacked to RAM (`/dev/shm` or `$XDG_RUNTIME_DIR`) while open. Search, add, and edit entries in a TUI, import/export CSV compatible with Bitwarden and KeePassXC, per-vault locking, rolling backups with a retention period. | `gpg`, `tar`; `python3` for CSV; `wl-copy` (Wayland) or `xclip`/`xsel` (X11) for clipboard |
-| `ripcd.sh` | `ripcd` | Interactive CD ripper. Pulls metadata and cover art from MusicBrainz, supports multi-disc releases, retries bad reads, resumes from the first failed track, writes ReplayGain tags on FLAC. | `cdparanoia`, `curl`, `jq`, `eject`, `md5sum`; `flac` and `metaflac`, `lame`, or `oggenc` for the formats you pick |
-| `media_transcode.sh` | `media_transcode` | Batch-shrinks large SDR video to HEVC in MKV, with optional downscaling, on CPU (libx265), NVIDIA (NVENC), or AMD/Intel (VAAPI). HDR10, HLG, Dolby Vision, and BT.2020 files are skipped and logged for you to handle by hand. No arguments opens a settings screen; flags or a saved profile plus `--yes` run it unattended (cron, systemd). See `media_transcode --help`. | bash 4.4+, `ffmpeg`, `ffprobe`; `flock` if you run more than one instance on the same library |
-| `system_update.sh` | `system_update` | Finds the native package manager (apt, dnf, yum, zypper, pacman plus yay/paru for AUR, apk, xbps, emerge, or nix), runs its full upgrade and cleanup, then updates Flatpak and Snap if they're installed. `-l` / `--log` also appends to `/var/log/system-update.log`. | root |
+| `folder_encrypt.sh` | `folder_encrypt` | Tars and GPG-encrypts a folder, `-D` reverses it. Encryption streams tar straight into gpg, so no unencrypted archive touches the disk. `-R` is bulk mode: every subdirectory of the target is handled on its own (or every `.gpg` inside it, with `-D`), and loose files in the target get moved into `loose_files/` first so they aren't left out. Asks before deleting sources, and won't extract on top of a folder that already exists. | `gpg`, `tar`, `gzip` |
+| `pw_manager.sh` | `pw_manager` | Menu-driven password manager. Vaults are GPG-encrypted tar archives (`.gpg` single password, `.gpg2` two-layer, two passwords), unpacked to RAM (`/dev/shm` or `$XDG_RUNTIME_DIR`) while open. Search, add, and edit entries in a TUI, import/export CSV compatible with Bitwarden and KeePassXC, per-vault locking, rolling backups with a retention period. New vaults are added to the known-vaults list on their own. | `gpg`, `tar`, `gzip`; `python3` for CSV; `wl-copy` (Wayland) or `xclip`/`xsel` (X11) for clipboard |
+| `ripcd.sh` | `ripcd` | Interactive CD ripper. Pulls metadata, composers and cover art from MusicBrainz, supports multi-disc releases, offers to rip a hidden track before track 1, retries bad reads, resumes from the first failed track, writes a rip log, CUE sheet and checksums, and ReplayGain tags on FLAC. | `cdparanoia`, `curl`, `jq`, `eject`, `md5sum`; `flac` and `metaflac`, `lame`, or `oggenc` for the formats you pick |
+| `media_transcode.sh` | `media_transcode` | Batch-shrinks large SDR video to HEVC in MKV, with optional downscaling, on CPU (libx265), NVIDIA (NVENC), or AMD/Intel (VAAPI). HDR10, HLG, Dolby Vision, and BT.2020 files are skipped and logged for you to handle by hand. No arguments opens a settings screen; flags or a saved profile plus `--yes` run it unattended (cron, systemd). See `media_transcode --help`. | `ffmpeg`, `ffprobe`, `md5sum`; `flock` if you run more than one instance on the same library |
+| `system_update.sh` | `system_update` | Finds the native package manager (apt, dnf, yum, zypper, pacman plus yay/paru for AUR, apk, xbps, emerge, eopkg, or nix), runs its full upgrade, then its cleanup only if the upgrade went through, then updates Flatpak and Snap if they're installed. On read-only-root openSUSE (MicroOS, Aeon, Kalpa) it uses `transactional-update` instead. `-l` / `--log` also appends to `/var/log/system_update.log`. | root |
 | `ufw_tui.sh` | `ufw_tui` | Menu-driven front end for `ufw`: list, add, and remove rules, allow or deny by port (`80/tcp`) or source IP, set default policies, enable/disable/reload, or reset. | `ufw`, root |
 | `use_my_zsh.sh` | `use_my_zsh` | Installs zsh if it's missing, makes it the login shell for you and root, and installs the bundled `zshrc` for both. See below. | root |
-| `funcupdate.sh` | `funcupdate` | Re-clones this repo and redeploys it to the system-wide layout (Option B below). `-l` / `--log` appends to `/var/log/system-update.log`. | `git`, root |
+| `funcupdate.sh` | `funcupdate` | Pulls the latest scripts from this repo and redeploys them. `sudo funcupdate` updates the system-wide install (Option B), `funcupdate -u` the per-user one (Option A). `-l` / `--log` also keeps a log. | `git` |
 
 ## Prerequisites
 
 - Linux with bash 4.4 or newer. Your login shell can be Bash or Zsh, it doesn't matter since every script runs under bash.
-- `git`, if you want to clone the repo or use `funcupdate`.
+- `git`, to clone the repo and for `funcupdate`.
 - Whatever the "Needs" column lists for the commands you actually plan to use. Nothing is required up front. A command tells you what's missing when you run it.
 
-I'm on Kubuntu, so in my case the common ones are `sudo apt install rsync ffmpeg gnupg screen`. Package names vary, so check yours: openSUSE calls it `gpg2` instead of `gnupg`, for example.
+I'm on Kubuntu, so in my case the common ones are `sudo apt install git rsync ffmpeg gnupg screen`. Package names vary, so check yours: openSUSE calls it `gpg2` instead of `gnupg`, for example.
 
 ## Installation
 
-Pick one option. Option A installs for just your user, Option B for everyone on the machine. Both use the same layout: scripts in a `lib/shell-functions` directory, command symlinks in a `bin` directory.
+Pick one option. Option A installs for just your user, Option B for everyone on the machine. Both use the same layout: scripts in a `lib/shell_functions` directory, command symlinks in a `bin` directory.
 
 Every command below works when pasted into either Bash or Zsh.
 
 ### Option A: just your user
 
 1. Clone the repo and step into it: `git clone https://github.com/NullAngst/shell_functions.git && cd shell_functions`
-2. Make the directories: `mkdir -p ~/.local/lib/shell-functions ~/.local/bin`
-3. Copy the scripts and the rc files: `cp *.sh zshrc bashrc ~/.local/lib/shell-functions/`, since `use_my_zsh` looks for `zshrc` next to itself
-4. Make the scripts executable: `chmod 755 ~/.local/lib/shell-functions/*.sh`
+2. Make the directories: `mkdir -p ~/.local/lib/shell_functions ~/.local/bin`
+3. Copy the scripts and the rc files: `cp *.sh zshrc bashrc ~/.local/lib/shell_functions/`, since `use_my_zsh` looks for `zshrc` next to itself
+4. Make the scripts executable: `chmod 755 ~/.local/lib/shell_functions/*.sh`
 5. Symlink each command into `~/.local/bin`:
 
    ```sh
-   for f in ~/.local/lib/shell-functions/*.sh; do
+   for f in ~/.local/lib/shell_functions/*.sh; do
        for name in $(sed -n -e '/^# COMMANDS:/{' -e 's/^# COMMANDS://p' -e 'q' -e '}' "$f" | grep . || basename "$f" .sh); do
            ln -sf "$f" ~/.local/bin/"$name"
        done
@@ -80,53 +86,77 @@ Every command below works when pasted into either Bash or Zsh.
 6. Make sure `~/.local/bin` is on your `PATH`. A lot of distros already add it; check with `printf '%s\n' "$PATH"`. If it's missing, add this line to `~/.bashrc` or `~/.zshrc` (or whichever rc file your shell reads): `export PATH="$HOME/.local/bin:$PATH"`
 7. Open a new terminal, or `source` the rc file you just edited.
 
-To update later, pull the repo and repeat steps 3 through 5. `funcupdate` doesn't touch this layout.
+Steps 2 through 5 are also what `bash funcupdate.sh -u` does, except it pulls the latest copy from GitHub instead of using your clone.
+
+To update later, run `funcupdate -u`.
 
 ### Option B: every user on the machine
 
 1. Clone the repo and step into it: `git clone https://github.com/NullAngst/shell_functions.git && cd shell_functions`
-2. Make the directory: `sudo mkdir -p /usr/local/lib/shell-functions`
-3. Copy the scripts and the rc files: `sudo cp *.sh zshrc bashrc /usr/local/lib/shell-functions/`
-4. Make the scripts executable: `sudo chmod 755 /usr/local/lib/shell-functions/*.sh`
+2. Make the directory: `sudo mkdir -p /usr/local/lib/shell_functions`
+3. Copy the scripts and the rc files: `sudo cp *.sh zshrc bashrc /usr/local/lib/shell_functions/`
+4. Make the scripts executable: `sudo chmod 755 /usr/local/lib/shell_functions/*.sh`
 5. Symlink each command into `/usr/local/bin`, which is already on everyone's `PATH`:
 
    ```sh
-   for f in /usr/local/lib/shell-functions/*.sh; do
+   for f in /usr/local/lib/shell_functions/*.sh; do
        for name in $(sed -n -e '/^# COMMANDS:/{' -e 's/^# COMMANDS://p' -e 'q' -e '}' "$f" | grep . || basename "$f" .sh); do
            sudo ln -sf "$f" /usr/local/bin/"$name"
        done
    done
    ```
 
-No `PATH` change needed for this one.
+No `PATH` change needed for this one. Steps 2 through 5 are also what `sudo bash funcupdate.sh` does, pulling the latest copy from GitHub.
 
-To update later, run `sudo funcupdate`. It clones the repo to a temp directory, removes every symlink in `/usr/local/bin` that points into `/usr/local/lib/shell-functions` along with the old scripts, then copies and links the new set (plus `zshrc` and `bashrc`). That clean-out step is what keeps a renamed or removed script from leaving a dead command behind. Symlinks it didn't create are left alone, and if the clone fails nothing gets removed.
+To update later, run `sudo funcupdate`.
 
-### Coming from the old pw-manager name
+### What funcupdate does
 
-`pw-manager` is now `pw_manager`. On Option B, `sudo funcupdate` drops the old command on its own. If your installed `funcupdate` predates this release, run it twice this one time: the first run still executes the old copy, the second uses the new one. On Option A, delete the dead link yourself: `rm ~/.local/bin/pw-manager ~/.local/lib/shell-functions/pw-manager.sh`
+It clones the repo to a temp directory, removes every symlink in the `bin` directory that points into the `lib/shell_functions` directory along with the old scripts, then copies and links the new set (plus `zshrc` and `bashrc`). That clean-out step is what keeps a renamed or removed script from leaving a dead command behind.
 
-Your vault list and settings carry over, since `pw_manager` still reads `~/.pw-manager-config` and `~/.pw-manager-vaults`.
+It's careful about what it touches:
+
+- if the clone fails or comes back empty, the current install is left exactly as it was
+- symlinks it didn't create are left alone
+- a command name that's already taken by a file it didn't create gets skipped with a warning, not overwritten
+
+### Upgrading from the hyphenated layout
+
+Older installs used `lib/shell-functions`. Updating moves you over on its own:
+
+1. Run `sudo funcupdate` (Option B) or `bash funcupdate.sh -u` from a fresh clone (Option A). On Option B, run it a second time this once: the first run still executes your old copy of funcupdate, the second runs the new one, which removes the old directory and its links.
+2. Open a new terminal, so your shell forgets the old command paths.
+
+The scripts move their own files the first time they run:
+
+- `pw_manager` moves `~/.pw-manager-config` and `~/.pw-manager-vaults` into `~/.config/pw_manager/`
+- `media_transcode` moves `~/.config/media-transcode/` and `~/.local/state/media-transcode/` to the underscore names, and the `.media-transcode/` folder in a scanned library to `.media_transcode/` on its next run there
+- `ripcd` moves `~/.cache/simplecd-ripper/` to `~/.cache/ripcd/`
+
+DON'T RUN AN OLD AND A NEW `media_transcode` ON THE SAME LIBRARY AT THE SAME TIME. Their lock folders have different names, so they can't see each other's locks and may grab the same file.
+
+`system_update` and `funcupdate` now log to `/var/log/system_update.log`. The old `/var/log/system-update.log` is left where it is; delete it whenever you like.
 
 ## Where things end up
 
 | Command | Paths it writes |
 |---|---|
-| `media_transcode` | Profiles in `~/.config/media-transcode/` (respects `$XDG_CONFIG_HOME`), run logs in `~/.local/state/media-transcode/` (respects `$XDG_STATE_HOME`), and inside the scanned directory: `_HDR_files_to_check.log` and a `.media-transcode/` folder holding per-file locks and the no-gain list. |
-| `pw_manager` | Config in `~/.pw-manager-config`, known vault list in `~/.pw-manager-vaults`, open vaults in `/dev/shm` (or `$XDG_RUNTIME_DIR`), backups in a `backups/` folder next to each vault. |
-| `ripcd` | Output defaults to `~/Music` (it asks), resume checkpoints in `~/.cache/simplecd-ripper/` (respects `$XDG_CACHE_HOME`), removed once a disc rips cleanly. |
+| `media_transcode` | Profiles in `~/.config/media_transcode/` (respects `$XDG_CONFIG_HOME`), run logs in `~/.local/state/media_transcode/` (respects `$XDG_STATE_HOME`), and inside the scanned directory: `_HDR_files_to_check.log` and a `.media_transcode/` folder holding per-file locks and the no-gain list. |
+| `pw_manager` | Settings and the known-vaults list in `~/.config/pw_manager/` (respects `$XDG_CONFIG_HOME`), open vaults in `/dev/shm` (or `$XDG_RUNTIME_DIR`), backups in a `backups/` folder next to each vault. |
+| `ripcd` | Output defaults to `~/Music` (it asks), resume checkpoints in `~/.cache/ripcd/` (respects `$XDG_CACHE_HOME`), removed once a disc rips cleanly. |
 | `use_my_zsh` | `~/.zshrc` and `/root/.zshrc` (the old ones kept as `.zshrc.bak-<date>`), `/etc/shells`, and with `-n` the useradd defaults. |
-| `system_update`, `funcupdate` | `/var/log/system-update.log`, only with `-l` / `--log`. |
+| `system_update`, `sudo funcupdate` | `/var/log/system_update.log`, only with `-l` / `--log`. |
+| `funcupdate -u` | `~/.local/state/shell_functions/funcupdate.log`, only with `-l` / `--log`. |
 
 Everything else writes only where you point it.
 
-Note that `media_transcode` and `pw_manager` use the home directory of whoever runs them. Run them with `sudo` and they read and write under `/root`, not under your home.
+Note that `media_transcode`, `pw_manager` and `ripcd` use the home directory of whoever runs them. Run them with `sudo` and they read and write under `/root`, not under your home.
 
 ## Uninstalling
 
-Option A: `find ~/.local/bin -maxdepth 1 -type l -lname "$HOME/.local/lib/shell-functions/*" -delete && rm -rf ~/.local/lib/shell-functions`
+Option A: `find ~/.local/bin -maxdepth 1 -type l -lname "$HOME/.local/lib/shell_functions/*" -delete && rm -rf ~/.local/lib/shell_functions`
 
-Option B: `sudo find /usr/local/bin -maxdepth 1 -type l -lname '/usr/local/lib/shell-functions/*' -delete && sudo rm -rf /usr/local/lib/shell-functions`
+Option B: `sudo find /usr/local/bin -maxdepth 1 -type l -lname '/usr/local/lib/shell_functions/*' -delete && sudo rm -rf /usr/local/lib/shell_functions`
 
 Both only remove symlinks that point into the install directory, so nothing else in your `bin` gets caught.
 
@@ -137,6 +167,8 @@ The repo also ships a `zshrc` and a `bashrc`: my prompt, history settings, compl
 The prompt colors come from my kitty themes in [NullAngst/kitty-themes](https://github.com/NullAngst/kitty-themes), so the prompt matches whichever one kitty is running. Kawaii Dark is the default. The others are `kawaii-light`, `amber`, `blurple`, `modern-dark`, `modern-light` and `verdigris-copper`. To switch, set `ZSH_PROMPT_THEME=amber` (zsh) or `BASH_PROMPT_THEME=amber` (bash) before the rc file runs, in `~/.zshenv` say, or edit the default line near the top of the file.
 
 The prompt color tells you where you are: red as root, blue in a git repo, green in a Python project, the theme's accent color everywhere else. The arrow on the second line turns red when the last command failed.
+
+The bash prompt hook goes in front of whatever `PROMPT_COMMAND` already holds instead of replacing it, so terminal integrations that use it keep working.
 
 Both define three aliases, which `funchelp` also lists. Each one is only set if the tool underneath supports it, so a machine without rsync still has a working `cp`.
 

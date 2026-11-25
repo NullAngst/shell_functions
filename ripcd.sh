@@ -19,11 +19,13 @@ shopt -s nullglob
 
 # --- Configuration ---
 VERBOSE=0
-SCRIPT_REVISION="6.0"
+SCRIPT_REVISION="6.1"
 USER_AGENT="shell_functions-ripcd/$SCRIPT_REVISION (https://github.com/NullAngst/shell_functions)"
 MAX_RETRIES=3
 RETRY_DELAY=5
-CHECKPOINT_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/simplecd-ripper"
+CHECKPOINT_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ripcd"
+# Checkpoints from before the rename are moved over on first run
+OLD_CHECKPOINT_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/simplecd-ripper"
 TEMP_DIR=""
 
 # --- Output helpers ---
@@ -100,7 +102,8 @@ parse_rip_quality() {
     local rip_log="$1" pregap peak quality
     pregap="$(printf '%s\n' "$rip_log" | sed -n 's/.*pre-gap \([0-9.][0-9.]*\).*/\1/p' | sed -n '1p')"
     peak="$(printf '%s\n' "$rip_log" | sed -n 's/.*peak \([0-9.][0-9.]*\).*/\1/p' | sed -n '1p')"
-    quality="$(printf '%s\n' "$rip_log" | sed -n 's/.*\(Done\|FAILED\).*/\1/p' | sed -n '$p')"
+    # The last verdict wins. Two plain patterns, since \| in sed is GNU-only.
+    quality="$(printf '%s\n' "$rip_log" | sed -n -e 's/.*\(Done\).*/\1/p' -e 's/.*\(FAILED\).*/\1/p' | sed -n '$p')"
     printf '%s|%s|%s' "$pregap" "$peak" "${quality:-UNKNOWN}"
 }
 
@@ -294,15 +297,34 @@ write_cue() {
     } > "$CUE_FILE"
 }
 
+usage() {
+    printf 'Usage: ripcd [-v] [-h]\n'
+    printf '  Interactive CD ripper: cdparanoia, MusicBrainz tags and cover art,\n'
+    printf '  FLAC, MP3, OGG or WAV output, a rip log, a CUE sheet and checksums.\n'
+    printf '  -v, --verbose   show the API calls and other detail\n'
+}
+
 main() {
     local opt
-    while getopts ':vh' opt; do
+    while getopts ':vh-:' opt; do
         case "$opt" in
             v) VERBOSE=1 ;;
-            h) printf 'Usage: ripcd [-v]\n'; exit 0 ;;
-            *) printf 'Usage: ripcd [-v]\n' >&2; exit 1 ;;
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    verbose) VERBOSE=1 ;;
+                    help) usage; exit 0 ;;
+                    *) printf 'ripcd: unknown option --%s\n' "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf 'ripcd: unknown option -%s\n' "$OPTARG" >&2; usage >&2; exit 1 ;;
         esac
     done
+    shift $((OPTIND - 1))
+    if [ "$#" -gt 0 ]; then
+        usage >&2
+        exit 1
+    fi
 
     printf 'Checking for required dependencies...\n'
     local -a missing=()
@@ -318,7 +340,7 @@ main() {
 
     TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ripcd.XXXXXX")"
     trap cleanup EXIT
-    trap 'exit 130' INT TERM
+    trap 'exit 130' INT TERM HUP
 
     # --- Auto-detect CD drive ---
     printf 'Scanning for CD drives with a disc...\n'
@@ -328,7 +350,7 @@ main() {
         error_exit "No CD drives detected. Please check your hardware."
     fi
     for drive in "${drives[@]}"; do
-        if cdparanoia -Q -d "$drive" >/dev/null 2>&1; then
+        if LC_ALL=C cdparanoia -Q -d "$drive" >/dev/null 2>&1; then
             valid+=("$drive")
         fi
     done
@@ -415,13 +437,15 @@ main() {
         printf "Directory '%s' does not exist. Creating it...\n" "$save_dir"
         mkdir -p -- "$save_dir" || error_exit "Could not create directory '$save_dir'."
     fi
+    # Absolute, so the encoders can never read a path as an option
+    save_dir="$(cd -P -- "$save_dir" && pwd -P)" || error_exit "Could not open directory '$save_dir'."
     success "Rips will be saved in: $save_dir"
     printf '\n'
 
     # --- Read the TOC ---
     printf 'Attempting to retrieve CD information from MusicBrainz...\n'
     local toc="$TEMP_DIR/cdparanoia_toc.txt"
-    cdparanoia -Q -d "$CD_DEVICE" > "$toc" 2>&1 || true
+    LC_ALL=C cdparanoia -Q -d "$CD_DEVICE" > "$toc" 2>&1 || true
     local track_count_actual
     track_count_actual="$(grep -cE '^[[:space:]]*[1-9][0-9]*\.' "$toc" || true)"
     if [ "${track_count_actual:-0}" -eq 0 ]; then
@@ -442,7 +466,7 @@ main() {
     toc_string="1+$track_count_actual+$leadout$offsets"
     verbose_echo "Constructed TOC for API: '$toc_string'"
 
-    api_url="https://musicbrainz.org/ws/2/discid/-?toc=$toc_string&fmt=json&inc=artist-credits+recordings+release-groups+genres+work-rels"
+    api_url="https://musicbrainz.org/ws/2/discid/-?toc=$toc_string&fmt=json&inc=artist-credits+recordings+release-groups+genres+work-rels+recording-level-rels+work-level-rels+artist-rels"
     verbose_echo "Constructed API URL: $api_url"
 
     MUSICBRAINZ_JSON="$TEMP_DIR/musicbrainz_response.json"
@@ -601,7 +625,9 @@ main() {
         for (( i = 0; i < TRACK_COUNT; i++ )); do
             title="$(mbq --argjson i "$i" '.releases[$idx].media[$midx].tracks[$i]?.title // ""' 2>/dev/null || true)"
             TRACK_TITLES+=("${title:-Track $((i + 1))}")
-            composer="$(mbq --argjson i "$i" '[.releases[$idx].media[$midx].tracks[$i]?.recording.relations[]? | select(.type == "composer") | .artist.name] | .[0] // ""' 2>/dev/null || true)"
+            # Composers are credited on the work a recording performs, so
+            # the path is recording -> work relation -> composer or writer
+            composer="$(mbq --argjson i "$i" '[.releases[$idx].media[$midx].tracks[$i]?.recording.relations[]? | select(."target-type" == "work") | .work.relations[]? | select(.type == "composer" or .type == "writer") | .artist.name] | unique | join("; ")' 2>/dev/null || true)"
             COMPOSERS+=("$composer")
             track_artist="$(mbq --argjson i "$i" '.releases[$idx].media[$midx].tracks[$i]?.recording."artist-credit"[0].name // ""' 2>/dev/null || true)"
             TRACK_ARTISTS+=("$track_artist")
@@ -680,7 +706,7 @@ main() {
         esac
 
         printf 'Edit options:\n  1) Album artist\n  2) Album title\n  3) Year\n  4) Genre\n'
-        printf '  5) Comment\n  6) Edit individual track\n  7) Start over with manual entry\n'
+        printf '  5) Comment\n  6) Edit individual track\n  7) Start over from the disc lookup\n'
         read -r -p "Select option (1-7) or press Enter to continue anyway: " edit_choice || edit_choice=""
         case "$edit_choice" in
             1) read -r -p "New album artist: " ALBUM_ARTIST || true ;;
@@ -696,6 +722,7 @@ main() {
                 fi
                 ;;
             7)
+                # Starts over from the top, MusicBrainz lookup included.
                 # exec replaces this process without running the EXIT trap
                 cleanup
                 exec "$0" "$@"
@@ -714,6 +741,9 @@ main() {
     printf '\n'
 
     # --- Checkpoint ---
+    if [ -d "$OLD_CHECKPOINT_DIR" ] && [ ! -e "$CHECKPOINT_DIR" ]; then
+        mv -- "$OLD_CHECKPOINT_DIR" "$CHECKPOINT_DIR" || true
+    fi
     mkdir -p -- "$CHECKPOINT_DIR"
     local last_completed resume_choice
     last_completed="$(load_checkpoint)"
@@ -789,9 +819,17 @@ main() {
     } >> "$LOG_FILE"
 
     # --- Hidden track (pre-gap audio before track 1) ---
-    local hda_file hda_out ext idx hda_rc
-    if grep -q '^[[:space:]]*0\.' "$toc" && [ "$last_completed" -eq 0 ] && command_exists flac; then
-        printf 'Hidden track (pre-gap audio) found. Ripping track 0...\n'
+    # cdparanoia never lists a track 0. Hidden audio shows up as track 1
+    # starting after sector 0, and "cdparanoia 0" rips that span. A gap of
+    # 2 seconds or less is just silence. Some drives can't read the pre-gap
+    # and hang trying, so it's opt-in.
+    local hda_file hda_out ext idx hda_rc hda_choice=n
+    if [ "$first_sector" -gt 150 ] && [ "$last_completed" -eq 0 ]; then
+        printf 'Track 1 starts %d seconds in, so there may be a hidden track before it.\n' "$((first_sector / 75))"
+        read -r -p "Rip it as track 00? Some drives can't read this area and stall. (y/N): " hda_choice || hda_choice=n
+    fi
+    if [[ "$hda_choice" =~ ^[yY] ]]; then
+        printf 'Ripping the hidden track...\n'
         if [ "$TOTAL_DISCS" -gt 1 ]; then
             hda_file="$OUTPUT_DIR/$DISC_NUMBER-00. Hidden Track"
         else

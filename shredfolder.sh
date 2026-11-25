@@ -7,7 +7,7 @@
 # leveling) and copy-on-write filesystems like Btrfs or ZFS the old data can
 # live somewhere else entirely, so treat this as best effort there.
 #
-# Usage: shredfolder <folderpath>
+# Usage: shredfolder [-h] [--] <folderpath>
 
 # Strict mode and exit would leak into the calling shell, so refuse to be sourced.
 (return 0 2>/dev/null) && { printf 'shredfolder: run this as a command, do not source it\n' >&2; return 1; }
@@ -17,24 +17,41 @@ set -euo pipefail
 prog=shredfolder
 
 usage() {
-    printf 'Usage: %s <folderpath>\n' "$prog"
+    printf 'Usage: %s [-h] [--] <folderpath>\n' "$prog"
+    printf '  Overwrites every file in the folder with shred, then deletes the folder.\n'
+    printf '  Not reliable on SSDs or copy-on-write filesystems such as Btrfs and ZFS.\n'
 }
 
-main() {
+need_cmds() {
     local missing=() cmd
-    for cmd in shred find rm; do
+    for cmd in "$@"; do
         command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
     done
     if [ "${#missing[@]}" -gt 0 ]; then
         printf '%s: missing required commands: %s\n' "$prog" "${missing[*]}" >&2
         exit 1
     fi
+}
 
-    case "${1:-}" in
-        -h|--help) usage; exit 0 ;;
-        "") usage >&2; exit 1 ;;
-    esac
-    if [ "$#" -ne 1 ]; then
+main() {
+    need_cmds shred find rm
+
+    local opt
+    while getopts ':h-:' opt; do
+        case "$opt" in
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    if [ "$#" -ne 1 ] || [ -z "$1" ]; then
         usage >&2
         exit 1
     fi
@@ -56,6 +73,10 @@ main() {
         printf '%s: "%s" not found or is not a directory\n' "$prog" "$target" >&2
         exit 1
     fi
+    # find takes a leading - as an expression, so make such a name a path
+    case "$target" in
+        -*) target="./$target" ;;
+    esac
 
     printf 'Shred every file in folder "%s" and delete it? shred is not reliable on SSDs or copy-on-write filesystems (y/N): ' "$target"
     read -r response || response=""

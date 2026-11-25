@@ -4,8 +4,8 @@
 # manager, runs its full upgrade and cleanup, then updates Flatpak and Snap
 # if they're installed.
 #
-# Usage: sudo system_update [-l | --log]
-#   -l, --log   also append everything to /var/log/system-update.log
+# Usage: sudo system_update [-l] [-h]
+#   -l, --log   also append everything to /var/log/system_update.log
 
 # Strict mode and exit would leak into the calling shell, so refuse to be sourced.
 (return 0 2>/dev/null) && { printf 'system_update: run this as a command, do not source it\n' >&2; return 1; }
@@ -13,12 +13,15 @@
 set -euo pipefail
 
 prog=system_update
-LOG_FILE="/var/log/system-update.log"
+LOG_FILE="/var/log/system_update.log"
 ERRORS=0
 ENABLE_LOGGING=0
 
 usage() {
-    printf 'Usage: sudo %s [-l | --log]\n' "$prog"
+    printf 'Usage: sudo %s [-l] [-h]\n' "$prog"
+    printf '  Runs a full upgrade and cleanup with the native package manager,\n'
+    printf '  then updates Flatpak and Snap if they are installed.\n'
+    printf '  -l, --log   also append everything to %s\n' "$LOG_FILE"
 }
 
 log() {
@@ -37,20 +40,26 @@ log_section() {
     log "============================================"
 }
 
-run_cmd() {
+# Run one step, count it as an error if it fails, and return its status, so
+# a caller can skip a cleanup that only makes sense after a good upgrade.
+try_cmd() {
     log "Running: $*"
     if [ "$ENABLE_LOGGING" -eq 1 ]; then
         # Shown live and kept in the log
-        if ! "$@" 2>&1 | tee -a "$LOG_FILE"; then
-            log "ERROR: Command failed: $*"
-            ERRORS=$((ERRORS + 1))
+        if "$@" 2>&1 | tee -a "$LOG_FILE"; then
+            return 0
         fi
-    else
-        if ! "$@"; then
-            log "ERROR: Command failed: $*"
-            ERRORS=$((ERRORS + 1))
-        fi
+    elif "$@"; then
+        return 0
     fi
+    log "ERROR: Command failed: $*"
+    ERRORS=$((ERRORS + 1))
+    return 1
+}
+
+# Same, for a step whose failure should not stop the rest of that section
+run_cmd() {
+    try_cmd "$@" || true
 }
 
 has_cmd() {
@@ -65,7 +74,7 @@ human_user() {
         u="$(logname 2>/dev/null || true)"
     fi
     if [ -z "$u" ] || [ "$u" = root ]; then
-        u="$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 { print $1; exit }' || true)"
+        u="$(getent passwd | LC_ALL=C awk -F: '$3 >= 1000 && $3 < 65534 { print $1; exit }' || true)"
     fi
     printf '%s' "$u"
 }
@@ -121,9 +130,12 @@ update_apt() {
 
     # apt-get instead of apt, since apt's own output warns that its CLI isn't
     # stable for scripts
-    run_cmd apt-get update -q
-    run_cmd apt-get dist-upgrade -y -q "${dpkg_opts[@]}"
-    run_cmd apt-get autoremove -y -q
+    try_cmd apt-get update -q || return 0
+    if try_cmd apt-get dist-upgrade -y -q "${dpkg_opts[@]}"; then
+        run_cmd apt-get autoremove -y -q
+    else
+        log "Skipping autoremove, since the upgrade did not finish."
+    fi
     run_cmd apt-get autoclean -q
 
     if [ -f /var/run/reboot-required ]; then
@@ -140,14 +152,21 @@ update_apt() {
 
 update_dnf() {
     log_section "DNF (Fedora/RHEL 8+/AlmaLinux/Rocky)"
-    run_cmd dnf upgrade --refresh -y
-    run_cmd dnf autoremove -y
+    # Works the same on dnf4 and dnf5
+    if try_cmd dnf upgrade --refresh -y; then
+        run_cmd dnf autoremove -y
+    else
+        log "Skipping autoremove, since the upgrade did not finish."
+    fi
 }
 
 update_yum() {
     log_section "YUM (CentOS/RHEL 7)"
-    run_cmd yum update -y
-    run_cmd yum autoremove -y
+    if try_cmd yum update -y; then
+        run_cmd yum autoremove -y
+    else
+        log "Skipping autoremove, since the upgrade did not finish."
+    fi
 }
 
 zypper_autoremove() {
@@ -168,28 +187,56 @@ zypper_autoremove() {
     run_cmd zypper -n remove --clean-deps -- "${pkgs[@]}"
 }
 
+# True when / is mounted read-only, as on MicroOS, Aeon and Kalpa, where
+# packages change through transactional-update snapshots instead.
+root_is_readonly() {
+    local opts
+    opts="$(LC_ALL=C awk '$2 == "/" { o = $4 } END { print o }' /proc/mounts 2>/dev/null || true)"
+    case ",$opts," in
+        *,ro,*) return 0 ;;
+    esac
+    return 1
+}
+
 update_zypper() {
+    if has_cmd transactional-update && root_is_readonly; then
+        log_section "transactional-update (openSUSE immutable)"
+        # The new snapshot only becomes active after a reboot
+        if try_cmd transactional-update --non-interactive dup; then
+            log "WARNING: A reboot is required to boot into the updated snapshot."
+        fi
+        return 0
+    fi
+
     log_section "Zypper (openSUSE/SLES)"
-    run_cmd zypper -n ref
+    try_cmd zypper -n ref || return 0
     # Tumbleweed and Slowroll are rolling and want dup. Leap and SLES want
     # up: dup there can pull in packages from the wrong release.
+    local upgraded=0
     case "$(os_id)" in
-        opensuse-tumbleweed|opensuse-slowroll|opensuse-microos)
-            run_cmd zypper -n dup --no-recommends ;;
+        opensuse-tumbleweed|opensuse-slowroll)
+            try_cmd zypper -n dup --no-recommends && upgraded=1 ;;
         *)
-            run_cmd zypper -n up ;;
+            try_cmd zypper -n up && upgraded=1 ;;
     esac
-    zypper_autoremove
+    if [ "$upgraded" -eq 1 ]; then
+        zypper_autoremove
+    else
+        log "Skipping the unneeded-package cleanup, since the upgrade did not finish."
+    fi
 }
 
 update_pacman() {
     log_section "Pacman (Arch/Manjaro)"
-    run_cmd pacman -Syu --noconfirm
+    if ! try_cmd pacman -Syu --noconfirm; then
+        log "Skipping orphan removal, since the upgrade did not finish."
+        return 0
+    fi
     local -a orphans=()
     local p
     while IFS= read -r p; do
         [ -n "$p" ] && orphans+=("$p")
-    done < <(pacman -Qdtq 2>/dev/null || true)
+    done < <(LC_ALL=C pacman -Qdtq 2>/dev/null || true)
     if [ "${#orphans[@]}" -gt 0 ]; then
         log "Removing ${#orphans[@]} orphaned package(s)..."
         run_cmd pacman -Rns --noconfirm -- "${orphans[@]}"
@@ -232,27 +279,50 @@ update_xbps() {
     log_section "XBPS (Void Linux)"
     # xbps has to update itself first, or the full upgrade refuses to run
     run_cmd xbps-install -Suy xbps
-    run_cmd xbps-install -Suy
-    run_cmd xbps-remove -Oo -y
+    if try_cmd xbps-install -Suy; then
+        run_cmd xbps-remove -Oo -y
+    else
+        log "Skipping orphan removal, since the upgrade did not finish."
+    fi
+}
+
+update_eopkg() {
+    log_section "eopkg (Solus)"
+    try_cmd eopkg update-repo || return 0
+    if try_cmd eopkg upgrade -y; then
+        run_cmd eopkg remove-orphans -y
+    else
+        log "Skipping orphan removal, since the upgrade did not finish."
+    fi
+    run_cmd eopkg delete-cache
 }
 
 update_emerge() {
     log_section "Portage/Emerge (Gentoo)"
-    run_cmd emerge --sync
-    run_cmd emerge -uDU --keep-going --with-bdeps=y @world
-    run_cmd emerge --depclean
-    # Modern Portage handles this itself, revdep-rebuild only exists if
-    # gentoolkit is installed
-    if has_cmd revdep-rebuild; then
-        run_cmd revdep-rebuild
+    # --ask=n overrides an --ask in EMERGE_DEFAULT_OPTS, which would otherwise
+    # sit waiting for an answer nobody is there to give
+    try_cmd emerge --sync || return 0
+    # depclean after a world update that stopped partway can remove things
+    # the half-updated system still needs, so it only runs after a clean one
+    if try_cmd emerge --ask=n -uDU --keep-going --with-bdeps=y @world; then
+        run_cmd emerge --ask=n --depclean
+        # Modern Portage handles this itself, revdep-rebuild only exists if
+        # gentoolkit is installed
+        if has_cmd revdep-rebuild; then
+            run_cmd revdep-rebuild
+        fi
+    else
+        log "Skipping depclean, since the world update did not finish."
     fi
 }
 
 update_nix() {
     log_section "Nix"
     if has_cmd nixos-rebuild; then
-        run_cmd nix-channel --update
-        run_cmd nixos-rebuild switch
+        # --upgrade updates the root channels first. A flake-based config
+        # needs "nix flake update" in its directory instead, which this
+        # can't know about.
+        run_cmd nixos-rebuild switch --upgrade
     else
         # Standalone nix install (non-NixOS), owned by a regular user
         local nix_user
@@ -271,12 +341,16 @@ update_snap() {
 
 update_flatpak() {
     log_section "Flatpak"
-    run_cmd flatpak update --system -y --noninteractive
+    if try_cmd flatpak update --system -y --noninteractive; then
+        run_cmd flatpak uninstall --system --unused -y --noninteractive
+    fi
 
     # Per-user installs, for every regular account that has some
     local username uid homedir shell
     while IFS=: read -r username _ uid _ _ homedir shell; do
-        [[ "$uid" =~ ^[0-9]+$ ]] || continue
+        case "$uid" in
+            ''|*[!0-9]*) continue ;;
+        esac
         if [ "$uid" -lt 1000 ] || [ "$uid" -ge 65534 ]; then
             continue
         fi
@@ -291,7 +365,7 @@ update_flatpak() {
 
 main() {
     local missing=() cmd
-    for cmd in date awk cut getent uname tee; do
+    for cmd in date awk cut getent uname tee id; do
         has_cmd "$cmd" || missing+=("$cmd")
     done
     if [ "${#missing[@]}" -gt 0 ]; then
@@ -299,16 +373,28 @@ main() {
         exit 1
     fi
 
-    while [ "$#" -gt 0 ]; do
-        case "$1" in
-            -l|--log) ENABLE_LOGGING=1 ;;
-            -h|--help) usage; exit 0 ;;
-            *) printf '%s: unknown argument: %s\n' "$prog" "$1" >&2; usage >&2; exit 1 ;;
+    local opt
+    while getopts ':lh-:' opt; do
+        case "$opt" in
+            l) ENABLE_LOGGING=1 ;;
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    log) ENABLE_LOGGING=1 ;;
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
         esac
-        shift
     done
+    shift $((OPTIND - 1))
+    if [ "$#" -gt 0 ]; then
+        usage >&2
+        exit 1
+    fi
 
-    if [ "$EUID" -ne 0 ]; then
+    if [ "$(id -u)" -ne 0 ]; then
         printf '%s: this must be run as root.\n' "$prog" >&2
         exit 1
     fi
@@ -336,6 +422,7 @@ main() {
     if has_cmd apk; then found=1; update_apk; fi
     if has_cmd xbps-install; then found=1; update_xbps; fi
     if has_cmd emerge; then found=1; update_emerge; fi
+    if has_cmd eopkg; then found=1; update_eopkg; fi
     if has_cmd nix-env; then found=1; update_nix; fi
 
     if [ "$found" -eq 0 ]; then

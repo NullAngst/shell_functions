@@ -6,7 +6,7 @@
 # leveling) and copy-on-write filesystems like Btrfs or ZFS the old data can
 # live somewhere else entirely, so treat this as best effort there.
 #
-# Usage: shredfile <filepath>
+# Usage: shredfile [-h] [--] <filepath>
 
 # Strict mode and exit would leak into the calling shell, so refuse to be sourced.
 (return 0 2>/dev/null) && { printf 'shredfile: run this as a command, do not source it\n' >&2; return 1; }
@@ -16,7 +16,9 @@ set -euo pipefail
 prog=shredfile
 
 usage() {
-    printf 'Usage: %s <filepath>\n' "$prog"
+    printf 'Usage: %s [-h] [--] <filepath>\n' "$prog"
+    printf '  Overwrites the file with shred, then deletes it. Not reliable on SSDs\n'
+    printf '  or copy-on-write filesystems such as Btrfs and ZFS.\n'
 }
 
 main() {
@@ -25,11 +27,22 @@ main() {
         exit 1
     fi
 
-    case "${1:-}" in
-        -h|--help) usage; exit 0 ;;
-        "") usage >&2; exit 1 ;;
-    esac
-    if [ "$#" -ne 1 ]; then
+    local opt
+    while getopts ':h-:' opt; do
+        case "$opt" in
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    if [ "$#" -ne 1 ] || [ -z "$1" ]; then
         usage >&2
         exit 1
     fi

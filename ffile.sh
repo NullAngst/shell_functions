@@ -5,7 +5,7 @@
 # made it, and when: stat, checksums, attributes, ACLs, hex header and tail,
 # strings, exiftool metadata, binwalk signatures, and entropy.
 #
-# Usage: ffile <filepath>
+# Usage: ffile [-h] [--] <filepath>
 #
 # Optional tools for fuller output: exiftool, binwalk, xxd or hexdump,
 # strings, getfattr, getfacl, lsattr, lsof, ent (or python3 as a fallback
@@ -20,6 +20,12 @@ prog=ffile
 sep="================================================================================"
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+    printf 'Usage: %s [-h] [--] <filepath>\n' "$prog"
+    printf '  Prints everything that can be learned about a file: stat, type,\n'
+    printf '  checksums, attributes, hex dumps, strings, metadata and entropy.\n'
+}
 
 header() {
     printf '\n%s\n  %s\n%s\n' "$sep" "$1" "$sep"
@@ -105,10 +111,24 @@ main() {
         exit 1
     fi
 
-    case "${1:-}" in
-        -h|--help) printf 'Usage: %s <filepath>\n' "$prog"; exit 0 ;;
-        "") printf 'Usage: %s <filepath>\n' "$prog" >&2; exit 1 ;;
-    esac
+    local opt
+    while getopts ':h-:' opt; do
+        case "$opt" in
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+        usage >&2
+        exit 1
+    fi
 
     local target="$1" real safe
     if [ ! -e "$target" ] && [ ! -L "$target" ]; then
@@ -285,4 +305,14 @@ main() {
     printf '  Target: %s\n\n' "$target"
 }
 
-main "$@"
+# The file name, metadata fields and tool output can all carry escape
+# sequences a terminal would act on, which is exactly what a suspicious file
+# might try. On a terminal, control bytes other than tab and newline are
+# shown as dots. Piped or redirected output is left alone.
+if [ -t 1 ]; then
+    # 31 control bytes in, 31 dots out: equal-length sets keep tr portable
+    dots="$(printf '%31s' '' | tr ' ' '.')"
+    main "$@" | tr '\000-\010\013-\037\177' "$dots"
+else
+    main "$@"
+fi

@@ -22,20 +22,39 @@
 (return 0 2>/dev/null) && { printf 'audio_convert_functions.sh: run this as 2mp3, 2flac or 2ogg, do not source it\n' >&2; return 1; }
 
 set -euo pipefail
+# Directory listings below are globs: empty matches vanish, dotfiles count
+shopt -s nullglob dotglob
 
 prog="${0##*/}"
+
+usage() {
+    printf 'Usage: %s [-v] [-h] [--] <file_or_dir>\n' "$prog"
+    printf '  A file converts next to itself. A directory converts every audio file\n'
+    printf '  directly inside it into a converted/ subfolder. Nothing is overwritten.\n'
+    printf '  -v   highest VBR quality instead of a fixed bitrate (mp3 and ogg only)\n'
+}
 
 # Vorbis bitrate for a file: 500k for stereo, 240k per channel otherwise.
 vorbis_bitrate() {
     local ch=""
     if command -v ffprobe >/dev/null 2>&1; then
-        ch="$(ffprobe -v error -select_streams a:0 -show_entries stream=channels -of csv=p=0 -i "$1" 2>/dev/null || true)"
+        ch="$(LC_ALL=C ffprobe -v error -select_streams a:0 -show_entries stream=channels -of csv=p=0 -i "$1" 2>/dev/null || true)"
     fi
     case "$ch" in
         2|"") printf '500k' ;;
         *[!0-9]*) printf '500k' ;;
         *) printf '%dk' "$(( ch * 240 ))" ;;
     esac
+}
+
+# True when a file name has one of the audio extensions this converts from.
+is_audio() {
+    local ext="${1##*.}"
+    [ "$ext" != "$1" ] || return 1
+    case "${ext,,}" in
+        flac|wav|aiff|aif|ape|wv|m4a|mp3|ogg|oga|opus|aac|wma) return 0 ;;
+    esac
+    return 1
 }
 
 # Convert a single file. Args: format vbr file outdir
@@ -111,27 +130,23 @@ convert_file() {
 # Bulk-convert every recognized audio file directly inside a directory
 # (not recursive) into a "converted" subfolder. Args: format vbr dir
 convert_dir() {
-    local format="$1" vbr="$2" dir="$3"
-    local -a exts=(flac wav aiff aif ape wv m4a mp3 ogg oga opus aac wma)
-    local outdir="${dir%/}/converted"
-
-    # Build a find expression like: -iname "*.flac" -o -iname "*.wav" ...
-    # leaving out the target format itself.
-    local -a find_expr=()
-    local ext
-    for ext in "${exts[@]}"; do
-        [ "$ext" != "$format" ] || continue
-        if [ "${#find_expr[@]}" -gt 0 ]; then
-            find_expr+=(-o)
-        fi
-        find_expr+=(-iname "*.$ext")
-    done
-
+    local format="$1" vbr="$2" dir="${3%/}"
+    [ -n "$dir" ] || dir="/"
+    local outdir="$dir/converted"
     local -a files=()
-    local f
-    while IFS= read -r -d '' f; do
+    local f ext
+
+    for f in "$dir"/*; do
+        # Regular files only, not symlinks or directories
+        if [ ! -f "$f" ] || [ -L "$f" ]; then
+            continue
+        fi
+        is_audio "${f##*/}" || continue
+        # Leave out files already in the target format
+        ext="${f##*.}"
+        [ "${ext,,}" != "$format" ] || continue
         files+=("$f")
-    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f \( "${find_expr[@]}" \) -print0)
+    done
 
     if [ "${#files[@]}" -eq 0 ]; then
         printf 'No convertible audio files found in "%s".\n' "$dir" >&2
@@ -158,60 +173,8 @@ convert_dir() {
     [ "$failed" -eq 0 ]
 }
 
-convert() {
-    local format="$1"
-    shift
-    local vbr=0 target=""
-
-    while [ "$#" -gt 0 ]; do
-        case "$1" in
-            -v) vbr=1 ;;
-            -h|--help)
-                printf 'Usage: %s [-v] <file_or_dir>\n' "$prog"
-                return 0
-                ;;
-            --) shift; break ;;
-            -*)
-                printf '%s: unknown option "%s"\n' "$prog" "$1" >&2
-                return 1
-                ;;
-            *)
-                if [ -n "$target" ]; then
-                    printf '%s: multiple targets given ("%s" and "%s")\n' "$prog" "$target" "$1" >&2
-                    return 1
-                fi
-                target="$1"
-                ;;
-        esac
-        shift
-    done
-    if [ "$#" -gt 0 ] && [ -z "$target" ]; then
-        target="$1"
-    fi
-
-    if [ -z "$target" ]; then
-        printf 'Usage: %s [-v] <file_or_dir>\n' "$prog" >&2
-        return 1
-    fi
-
-    if [ -d "$target" ]; then
-        convert_dir "$format" "$vbr" "$target"
-        return
-    fi
-
-    if [ ! -f "$target" ]; then
-        printf '%s: "%s" not found\n' "$prog" "$target" >&2
-        return 1
-    fi
-
-    local rc=0
-    convert_file "$format" "$vbr" "$target" "" || rc=$?
-    # A single file that was skipped because the output exists is not a failure
-    [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]
-}
-
 main() {
-    local format
+    local format vbr=0 opt target
     case "$prog" in
         2mp3)  format=mp3 ;;
         2flac) format=flac ;;
@@ -227,7 +190,53 @@ main() {
         exit 1
     fi
 
-    convert "$format" "$@"
+    while getopts ':vh-:' opt; do
+        case "$opt" in
+            v) vbr=1 ;;
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+        usage >&2
+        exit 1
+    fi
+    target="$1"
+
+    if [ -d "$target" ]; then
+        # A name starting with - could pass for an ffmpeg option
+        case "$target" in
+            -*) target="./$target" ;;
+        esac
+        convert_dir "$format" "$vbr" "$target"
+        return
+    fi
+
+    # A bare name like "Intro: Live.flac" would make ffmpeg look for an
+    # "Intro" protocol, and one starting with - could pass for an option.
+    # A ./ prefix keeps both a plain path.
+    case "$target" in
+        /*|./*|../*) ;;
+        *) target="./$target" ;;
+    esac
+
+    if [ ! -f "$target" ]; then
+        printf '%s: "%s" not found\n' "$prog" "$target" >&2
+        exit 1
+    fi
+
+    local rc=0
+    convert_file "$format" "$vbr" "$target" "" || rc=$?
+    # A single file that was skipped because the output exists is not a failure
+    [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]
 }
 
 main "$@"

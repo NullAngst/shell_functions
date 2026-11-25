@@ -39,6 +39,21 @@ main() {
         exit 1
     fi
 
+    local opt
+    while getopts ':h-:' opt; do
+        case "$opt" in
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
     local cmd="${1:-}"
     if [ "$#" -gt 0 ]; then
         shift
@@ -65,9 +80,6 @@ main() {
             ;;
         wipe)
             screen -wipe || true
-            ;;
-        -h|--help)
-            usage
             ;;
         *)
             usage >&2

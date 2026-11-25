@@ -157,4 +157,24 @@ _prompt_build() {
     PS1="\n${PROMPT_FG_WHITE}\u${PROMPT_FG_GRAY}@\h ${PROMPT_FG_NONE}in ${PROMPT_CONTEXT_COLOR}\[\e[1m\]\w\[\e[22m\]${git_branch}\n${arrow_color}❯ ${PROMPT_FG_NONE}"
 }
 
-PROMPT_COMMAND="_prompt_build"
+# Runs first, so it sees the exit status of your last command. Anything
+# already in PROMPT_COMMAND (VTE's directory tracking, terminal integrations)
+# is kept, and sourcing this file again doesn't add it twice. Bash 5.1+ also
+# allows PROMPT_COMMAND to be an array, so both forms are handled.
+case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+    "declare -a"*)
+        case " ${PROMPT_COMMAND[*]} " in
+            *" _prompt_build "*) ;;
+            *) PROMPT_COMMAND=(_prompt_build "${PROMPT_COMMAND[@]}") ;;
+        esac
+        ;;
+    *)
+        case ";${PROMPT_COMMAND:-};" in
+            *";_prompt_build;"*) ;;
+            *)
+                # shellcheck disable=SC2128,SC2178  # this branch only sees a plain string
+                PROMPT_COMMAND="_prompt_build${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+                ;;
+        esac
+        ;;
+esac

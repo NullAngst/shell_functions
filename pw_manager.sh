@@ -23,10 +23,13 @@
 set -euo pipefail
 shopt -s nullglob
 
-# These paths predate the rename from pw-manager and are kept so existing
-# settings and vault lists carry over.
-CONFIG_FILE="$HOME/.pw-manager-config"
-VAULTS_FILE="$HOME/.pw-manager-vaults"
+# Settings and the known-vaults list. Files from the old pw-manager name
+# ($HOME/.pw-manager-config and -vaults) are moved here on first run.
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pw_manager"
+CONFIG_FILE="$CONFIG_DIR/config"
+VAULTS_FILE="$CONFIG_DIR/vaults"
+OLD_CONFIG_FILE="$HOME/.pw-manager-config"
+OLD_VAULTS_FILE="$HOME/.pw-manager-vaults"
 
 DEFAULT_VAULT_PATH=""
 BACKUP_RETENTION_DAYS=7
@@ -166,9 +169,60 @@ sanitize_display() {
     printf '%s' "$1" | tr '\t' ' ' | tr -d '\000-\010\013-\037\177'
 }
 
+usage() {
+    printf 'Usage: pw_manager [-h]\n'
+    printf '  Terminal password manager. Vaults are GPG-encrypted tar archives:\n'
+    printf '  .gpg for one password, .gpg2 for two layers with two passwords.\n'
+    printf '  Settings live in %s\n' "$CONFIG_DIR"
+}
+
+# Make the config dir and carry over files from the old pw-manager name.
+# A failure here is only a warning: the menu still works, it just can't
+# remember settings.
+init_config_dir() {
+    if ! mkdir -p -- "$CONFIG_DIR" 2>/dev/null; then
+        printf 'pw_manager: cannot create %s, settings will not be saved\n' "$CONFIG_DIR" >&2
+        sleep 2
+        return 0
+    fi
+    chmod 700 -- "$CONFIG_DIR" 2>/dev/null || true
+    if [ -f "$OLD_CONFIG_FILE" ] && [ ! -e "$CONFIG_FILE" ]; then
+        mv -- "$OLD_CONFIG_FILE" "$CONFIG_FILE" || true
+    fi
+    if [ -f "$OLD_VAULTS_FILE" ] && [ ! -e "$VAULTS_FILE" ]; then
+        mv -- "$OLD_VAULTS_FILE" "$VAULTS_FILE" || true
+    fi
+}
+
+# An absolute path for a vault, so the known-vaults list still works when
+# pw_manager is started from another directory.
+absolute_path() {
+    case "$1" in
+        /*) printf '%s' "$1" ;;
+        *) printf '%s/%s' "$PWD" "$1" ;;
+    esac
+}
+
+# Add a vault to the known-vaults list unless it's already there.
+remember_vault() {
+    local path="$1" name i
+    load_known_vaults
+    for ((i = 0; i < ${#KNOWN_VAULT_PATHS[@]}; i++)); do
+        if [ "${KNOWN_VAULT_PATHS[$i]}" = "$path" ]; then
+            return 0
+        fi
+    done
+    name="${path##*/}"
+    name="${name%.gpg2}"
+    name="${name%.gpg}"
+    KNOWN_VAULT_NAMES+=("$name")
+    KNOWN_VAULT_PATHS+=("$path")
+    save_known_vaults || true
+}
+
 check_dependencies() {
     local missing=() dep
-    for dep in gpg tar gzip sed find mktemp tr awk cp mv; do
+    for dep in gpg tar gzip sed find mktemp tr awk cp mv chmod rm mkdir sleep; do
         command -v "$dep" >/dev/null 2>&1 || missing+=("$dep")
     done
     if [ "${#missing[@]}" -gt 0 ]; then
@@ -202,8 +256,11 @@ load_config() {
 }
 
 save_config() {
-    printf '%s\n%s\n%s\n' "$DEFAULT_VAULT_PATH" "$BACKUP_RETENTION_DAYS" "$RAM_ONLY_STRICT" > "$CONFIG_FILE"
-    chmod 600 -- "$CONFIG_FILE"
+    if ! printf '%s\n%s\n%s\n' "$DEFAULT_VAULT_PATH" "$BACKUP_RETENTION_DAYS" "$RAM_ONLY_STRICT" > "$CONFIG_FILE"; then
+        printf 'Could not save settings to %s\n' "$CONFIG_FILE"
+        return 0
+    fi
+    chmod 600 -- "$CONFIG_FILE" || true
 }
 
 load_known_vaults() {
@@ -222,12 +279,15 @@ load_known_vaults() {
 
 save_known_vaults() {
     local i
-    {
+    if ! {
         for ((i = 0; i < ${#KNOWN_VAULT_NAMES[@]}; i++)); do
             printf '%s\t%s\n' "${KNOWN_VAULT_NAMES[$i]}" "${KNOWN_VAULT_PATHS[$i]}"
         done
-    } > "$VAULTS_FILE"
-    chmod 600 -- "$VAULTS_FILE"
+    } > "$VAULTS_FILE"; then
+        printf 'Could not save the known-vaults list to %s\n' "$VAULTS_FILE"
+        return 0
+    fi
+    chmod 600 -- "$VAULTS_FILE" || true
 }
 
 forget_known_vault() {
@@ -282,7 +342,9 @@ fs_type_of() {
 ram_dir() {
     local d t
     for d in /dev/shm "${XDG_RUNTIME_DIR:-}"; do
-        [ -n "$d" ] && [ -d "$d" ] && [ -w "$d" ] || continue
+        if [ -z "$d" ] || [ ! -d "$d" ] || [ ! -w "$d" ]; then
+            continue
+        fi
         t="$(fs_type_of "$d")"
         if [ "$t" = tmpfs ] || [ "$t" = ramfs ]; then
             printf '%s' "$d"
@@ -374,6 +436,12 @@ acquire_vault_lock() {
 }
 
 print_lock_held() {
+    local dir
+    dir="$(dirname -- "$1")"
+    if [ ! -w "$dir" ]; then
+        printf 'Cannot write to %s, so the vault cannot be locked or saved there.\n' "$dir"
+        return 0
+    fi
     printf 'This vault appears to already be open elsewhere (lock present).\n'
     printf "If you're sure that's not the case, remove: %s.lock\n" "$1"
 }
@@ -389,14 +457,14 @@ decrypt_vault() {
     init_secure_env || return 1
 
     if [ "$type" = "2" ]; then
-        if ! gpg -d "${GPG_COMMON[@]}" "$vault" 3< <(printf '%s' "$MASTER_PWD_2") 2>/dev/null \
+        if ! gpg -d "${GPG_COMMON[@]}" -- "$vault" 3< <(printf '%s' "$MASTER_PWD_2") 2>/dev/null \
              | gpg -d "${GPG_COMMON[@]}" 3< <(printf '%s' "$MASTER_PWD_1") 2>/dev/null \
              | tar -xz -C "$SECURE_TMP" 2>/dev/null; then
             wipe_secure_tmp
             return 1
         fi
     else
-        if ! gpg -d "${GPG_COMMON[@]}" "$vault" 3< <(printf '%s' "$MASTER_PWD_1") 2>/dev/null \
+        if ! gpg -d "${GPG_COMMON[@]}" -- "$vault" 3< <(printf '%s' "$MASTER_PWD_1") 2>/dev/null \
              | tar -xz -C "$SECURE_TMP" 2>/dev/null; then
             wipe_secure_tmp
             return 1
@@ -610,7 +678,7 @@ add_entry() {
 
     if [ -z "$domain" ]; then
         printf 'Domain / Title cannot be empty. Entry not added.\n'
-        sleep 1.5
+        sleep 2
         term civis
         return 0
     fi
@@ -627,6 +695,22 @@ add_entry() {
 
     load_entries
     term civis
+}
+
+# Open a file in the user's editor: $VISUAL, then $EDITOR, then nano, then vi.
+# The variable may hold arguments too ("code -w"), so it's split on spaces.
+run_editor() {
+    local -a ed=()
+    if [ -n "${VISUAL:-}" ]; then
+        read -r -a ed <<< "$VISUAL"
+    elif [ -n "${EDITOR:-}" ]; then
+        read -r -a ed <<< "$EDITOR"
+    elif command -v nano >/dev/null 2>&1; then
+        ed=(nano)
+    else
+        ed=(vi)
+    fi
+    "${ed[@]}" "$1"
 }
 
 view_entry() {
@@ -661,7 +745,7 @@ view_entry() {
                 ;;
             e|E)
                 term cnorm
-                "${EDITOR:-nano}" "$file" || true
+                run_editor "$file" || true
                 term civis
                 # The editor may have saved under a different name or removed it
                 if [ ! -f "$file" ]; then
@@ -764,14 +848,16 @@ vault_tui() {
                 term civis
                 ;;
             "$ESC")
-                # Arrow keys arrive as ESC [ A / ESC [ B. A lone ESC means exit.
+                # Arrow keys arrive as ESC [ A / ESC [ B, or ESC O A / ESC O B
+                # when the terminal is in application cursor mode. A lone ESC
+                # means exit.
                 seq=""
                 read -rsn2 -t 0.1 seq || true
-                if [ "$seq" = "[A" ]; then
+                if [ "$seq" = "[A" ] || [ "$seq" = "OA" ]; then
                     if [ "$SELECTED_INDEX" -gt 0 ]; then
                         SELECTED_INDEX=$(( SELECTED_INDEX - 1 ))
                     fi
-                elif [ "$seq" = "[B" ]; then
+                elif [ "$seq" = "[B" ] || [ "$seq" = "OB" ]; then
                     if [ "$SELECTED_INDEX" -lt $(( ${#DISPLAY_ENTRIES[@]} - 1 )) ]; then
                         SELECTED_INDEX=$(( SELECTED_INDEX + 1 ))
                     fi
@@ -987,7 +1073,8 @@ set_password() {
 # Ask for name, type and password(s) of a new vault. Sets CURRENT_VAULT and
 # CURRENT_VAULT_TYPE. Returns 1 if anything is wrong or the user backs out.
 prompt_new_vault() {
-    local target_dir="${DEFAULT_VAULT_PATH:-$PWD}" v_name v_type
+    local target_dir v_name v_type
+    target_dir="$(absolute_path "${DEFAULT_VAULT_PATH:-$PWD}")"
     read -r -p "Enter new vault name (e.g. personal): " v_name || v_name=""
     [ -n "$v_name" ] || return 1
     if [[ ! "$v_name" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$v_name" == .* ]]; then
@@ -1111,7 +1198,7 @@ export_csv_menu() {
         return 0
     fi
 
-    if ! gpg "${GPG_SYM[@]}" "${GPG_COMMON[@]}" -o "$out_path" "$plain_csv" 3< <(printf '%s' "$csv_pwd1") 2>/dev/null; then
+    if ! gpg "${GPG_SYM[@]}" "${GPG_COMMON[@]}" -o "$out_path" -- "$plain_csv" 3< <(printf '%s' "$csv_pwd1") 2>/dev/null; then
         printf 'Failed to encrypt the export file.\n'
         wipe_secure_tmp; release_vault_lock; scrub_master_pwds
         sleep 3
@@ -1163,7 +1250,7 @@ import_csv_menu() {
     init_csv_tmp || { sleep 2; return 0; }
     plain_csv="$CSV_TMP/import.csv"
 
-    if ! gpg -d "${GPG_COMMON[@]}" -o "$plain_csv" "$csv_path" 3< <(printf '%s' "$csv_pwd") 2>/dev/null; then
+    if ! gpg -d "${GPG_COMMON[@]}" -o "$plain_csv" -- "$csv_path" 3< <(printf '%s' "$csv_pwd") 2>/dev/null; then
         printf 'Failed to decrypt CSV. Wrong password or corrupted file.\n'
         wipe_csv_tmp
         sleep 2
@@ -1202,8 +1289,14 @@ import_csv_menu() {
             wipe_csv_tmp
             return 0
         fi
-        if ! init_secure_env; then
+        if ! acquire_vault_lock "$CURRENT_VAULT"; then
+            print_lock_held "$CURRENT_VAULT"
             scrub_master_pwds; wipe_csv_tmp
+            sleep 3
+            return 0
+        fi
+        if ! init_secure_env; then
+            release_vault_lock; scrub_master_pwds; wipe_csv_tmp
             sleep 2
             return 0
         fi
@@ -1226,6 +1319,10 @@ import_csv_menu() {
     sleep 3
 
     vault_tui
+    # A new vault only exists on disk if it was saved from the TUI
+    if [ -f "$CURRENT_VAULT" ]; then
+        remember_vault "$CURRENT_VAULT"
+    fi
     release_vault_lock
     wipe_secure_tmp
     scrub_master_pwds
@@ -1275,6 +1372,7 @@ select_vault_menu() {
             existing_idx=-1
             read -r -p "Path to vault (.gpg or .gpg2): " new_path || continue
             new_path="$(expand_home "$new_path")"
+            [ -z "$new_path" ] || new_path="$(absolute_path "$new_path")"
             if [ ! -f "$new_path" ]; then
                 printf 'File not found.\n'
                 sleep 2
@@ -1393,16 +1491,25 @@ make_vault() {
 
     prompt_new_vault || return 0
 
+    if ! acquire_vault_lock "$CURRENT_VAULT"; then
+        print_lock_held "$CURRENT_VAULT"
+        scrub_master_pwds
+        sleep 3
+        return 0
+    fi
     if ! init_secure_env; then
+        release_vault_lock
         scrub_master_pwds
         sleep 2
         return 0
     fi
     if encrypt_vault "$CURRENT_VAULT" "$CURRENT_VAULT_TYPE"; then
         printf 'Vault created at %s\n' "$CURRENT_VAULT"
+        remember_vault "$CURRENT_VAULT"
     else
         printf 'Vault creation FAILED. Nothing was written to %s.\n' "$CURRENT_VAULT"
     fi
+    release_vault_lock
     wipe_secure_tmp
     scrub_master_pwds
     sleep 2
@@ -1455,11 +1562,7 @@ show_main_menu() {
         read -r -p "Select an option: " choice || exit 0
 
         case "$choice" in
-            1)
-                if select_vault_menu; then
-                    break
-                fi
-                ;;
+            1) select_vault_menu || true ;;
             2) make_vault ;;
             3) import_csv_menu ;;
             4) export_csv_menu ;;
@@ -1467,7 +1570,7 @@ show_main_menu() {
                 read -r -p "Enter directory path: " new_path || new_path=""
                 new_path="$(expand_home "$new_path")"
                 if [ -n "$new_path" ] && [ -d "$new_path" ]; then
-                    DEFAULT_VAULT_PATH="$new_path"
+                    DEFAULT_VAULT_PATH="$(cd -P -- "$new_path" && pwd -P)"
                     save_config
                     printf 'Default path updated.\n'
                 else
@@ -1503,7 +1606,6 @@ show_main_menu() {
                 idx="$(index_for "$choice")"
                 if [ "$idx" -ge 0 ] && [ "$idx" -lt "${#default_vaults[@]}" ]; then
                     open_vault "${default_vaults[$idx]}"
-                    break
                 fi
                 ;;
         esac
@@ -1512,6 +1614,27 @@ show_main_menu() {
 
 main() {
     check_dependencies
+
+    local opt
+    while getopts ':h-:' opt; do
+        case "$opt" in
+            h) usage; exit 0 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf 'pw_manager: unknown option --%s\n' "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf 'pw_manager: unknown option -%s\n' "$OPTARG" >&2; usage >&2; exit 1 ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    if [ "$#" -gt 0 ]; then
+        usage >&2
+        exit 1
+    fi
+
+    init_config_dir
     load_config
     # CTRL+S is the save key, so flow control has to be off for it to arrive
     if [ -t 0 ]; then

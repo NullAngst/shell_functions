@@ -13,22 +13,35 @@
 (return 0 2>/dev/null) && { printf 'moveav: run this as a command, do not source it\n' >&2; return 1; }
 
 set -euo pipefail
+# Directory listings below are globs: empty matches vanish, dotfiles count
+shopt -s nullglob dotglob
 
 prog=moveav
 
 usage() {
     printf 'Usage: %s [-R] [target_dir]\n' "$prog"
+    printf '  Sorts media into images/, videos/ and audio/ (default: current directory).\n'
     printf '  -R   sort each subdirectory independently as well\n'
+}
+
+need_cmds() {
+    local missing=() cmd
+    for cmd in "$@"; do
+        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        printf '%s: missing required commands: %s\n' "$prog" "${missing[*]}" >&2
+        exit 1
+    fi
 }
 
 # Print the category for a file name, or nothing if it isn't media.
 category_for() {
     local ext="${1##*.}"
     [ "$ext" != "$1" ] || return 0
-    ext="$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')"
-    case "$ext" in
-        jpg|jpeg|png|gif|webp|bmp|tif|tiff|svg|heic|avif|jxl) printf 'images' ;;
-        mp4|mkv|avi|mov|wmv|flv|webm|m4v|mpg|mpeg|ts|m2ts) printf 'videos' ;;
+    case "${ext,,}" in
+        jpg|jpeg|png|gif|webp|bmp|tif|tiff|svg|heic|heif|avif|jxl) printf 'images' ;;
+        mp4|mkv|avi|mov|wmv|flv|webm|m4v|mpg|mpeg|ts|m2ts|mts|3gp) printf 'videos' ;;
         mp3|wav|flac|m4a|ogg|oga|opus|aac|wma|aiff|aif|ape|wv) printf 'audio' ;;
     esac
 }
@@ -36,13 +49,13 @@ category_for() {
 # A path in dir that does not exist yet, based on name.
 free_name() {
     local dir="$1" name="$2" stem ext i=1
-    if [ ! -e "$dir/$name" ]; then
+    if [ ! -e "$dir/$name" ] && [ ! -L "$dir/$name" ]; then
         printf '%s' "$dir/$name"
         return 0
     fi
     stem="${name%.*}"
     ext="${name##*.}"
-    while [ -e "$dir/${stem}_$i.$ext" ]; do
+    while [ -e "$dir/${stem}_$i.$ext" ] || [ -L "$dir/${stem}_$i.$ext" ]; do
         i=$((i + 1))
     done
     printf '%s' "$dir/${stem}_$i.$ext"
@@ -52,10 +65,14 @@ sort_dir() {
     local dir="$1" file name cat dest
     local -a files=()
 
-    # Collect first, so the mkdir/mv below cannot change what find is walking.
-    while IFS= read -r -d '' file; do
+    # Collect first, so the mkdir/mv below cannot change what is being listed.
+    # Regular files only: a symlink stays where it is.
+    for file in "$dir"/*; do
+        if [ ! -f "$file" ] || [ -L "$file" ]; then
+            continue
+        fi
         files+=("$file")
-    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f -print0)
+    done
 
     for file in "${files[@]}"; do
         name="${file##*/}"
@@ -72,11 +89,19 @@ main() {
     local recursive=0 target_dir="." opt d
     local -a dirs=()
 
-    while getopts ':Rrh' opt; do
+    need_cmds find mkdir mv
+
+    while getopts ':Rrh-:' opt; do
         case "$opt" in
             R|r) recursive=1 ;;
             h) usage; exit 0 ;;
-            *) printf '%s: invalid option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+            -)
+                case "$OPTARG" in
+                    help) usage; exit 0 ;;
+                    *) printf '%s: unknown option --%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
+                esac
+                ;;
+            *) printf '%s: unknown option -%s\n' "$prog" "$OPTARG" >&2; usage >&2; exit 1 ;;
         esac
     done
     shift $((OPTIND - 1))
@@ -98,7 +123,8 @@ main() {
     if [ "$recursive" -eq 1 ]; then
         # Skip the category folders themselves, or a second run would sort
         # images/ into images/images/. The target itself always gets sorted,
-        # even if it happens to be called images/.
+        # even if it happens to be called images/. -mindepth is not POSIX,
+        # but GNU, BSD and BusyBox find all have it.
         dirs=("$target_dir")
         while IFS= read -r -d '' d; do
             dirs+=("$d")
